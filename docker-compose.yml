@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:8.0
+    container_name: tea-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: password
+      MONGO_INITDB_DATABASE: tea-backend-db
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - tea-network
+
+  # Redis Cache
+  redis:
+    image: redis:7.4-alpine
+    container_name: tea-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - tea-network
+
+  # API Service
+  api:
+    build: .
+    container_name: tea-api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      MONGODB_URI: mongodb://root:password@mongodb:27017/tea-backend-db?authSource=admin
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - mongodb
+      - redis
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - tea-network
+
+# Named volumes for data persistence
+volumes:
+  mongodb_data:
+  redis_data:
+
+# Custom network
+networks:
+  tea-network:
+    driver: bridge

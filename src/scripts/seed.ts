@@ -1,0 +1,1 @@
+// Currently empty but it will be the seed script for the database in the future.
