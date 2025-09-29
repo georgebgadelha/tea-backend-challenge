@@ -1,4 +1,6 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { ScoreCalculator } from '../utils/scoreCalculator';
+import { DEFAULT_SCORING_CONFIG } from '../types/scoring';
 
 export interface IPost {
   title: string;
@@ -32,14 +34,6 @@ const postSchema = new Schema<PostDocument>({
     type: Schema.Types.ObjectId,
     ref: 'Category',
     required: [true, 'Category is required'],
-    validate: {
-      validator: async function(categoryId: mongoose.Types.ObjectId) {
-        const Category = mongoose.model('Category');
-        const category = await Category.findById(categoryId);
-        return !!category;
-      },
-      message: 'Category does not exist',
-    },
   },
   authorId: {
     type: String,
@@ -66,7 +60,17 @@ const postSchema = new Schema<PostDocument>({
 // Calculate score before saving
 postSchema.pre('save', function(next) {
   if (this.isModified('likeCount') || this.isNew) {
-    this.score = calculatePostScore(this.likeCount, this.createdAt);
+    try {
+      const scoreResult = ScoreCalculator.calculateScore(
+        this.likeCount, 
+        this.createdAt || new Date(), 
+        DEFAULT_SCORING_CONFIG
+      );
+      this.score = scoreResult.finalScore;
+    } catch (error) {
+      // If score calculation fails, use a default score
+      this.score = 0;
+    }
   }
   next();
 });
@@ -78,18 +82,5 @@ postSchema.virtual('category', {
   foreignField: '_id',
   justOne: true,
 });
-
-// Score calculation function
-function calculatePostScore(likeCount: number, createdAt: Date): number {
-  // Like score: log10(likes + 1) to prevent log(0)
-  const likeScore = Math.log10(likeCount + 1);
-  
-  // Freshness score: decay over 30 days
-  const ageInDays = (Date.now() - createdAt.getTime()) / (1000 * 60 * 60 * 24);
-  const freshnessScore = Math.max(0, 1 - (ageInDays / 30));
-  
-  // Combined score
-  return Number((likeScore + freshnessScore).toFixed(4));
-}
 
 export const Post = mongoose.model<PostDocument>('Post', postSchema);

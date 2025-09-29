@@ -1,37 +1,51 @@
-import express, { Request, Response } from 'express';
-import cors from 'cors';
-import { connectDatabase, getDatabaseHealth, disconnectDatabase } from './config/database';
+import * as express from 'express';
+import { Request, Response } from 'express';
+import * as cors from 'cors';
+import {
+  connectDatabase,
+  getDatabaseHealth,
+  disconnectDatabase,
+} from './config/database';
 import { connectRedis, getRedisHealth, disconnectRedis } from './config/redis';
 import { logger } from './utils/logger';
+import { setupRoutes } from './routes';
+import { errorHandler } from './middleware/errorHandler';
 
-const app = express();
+const app = express.default();
 const PORT = process.env.PORT || 3000;
+
+// App setup - middlewares and routes (always happens when app is imported)
+app.use(cors.default());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+setupRoutes(app);
+
+app.get('/health', async (req: Request, res: Response) => {
+  const mongoHealth = await getDatabaseHealth();
+  const redisHealth = await getRedisHealth();
+
+  res.json({
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    services: {
+      mongodb: mongoHealth,
+      redis: redisHealth,
+    },
+  });
+});
+
+// Global error handler
+app.use(errorHandler);
 
 async function startServer() {
   try {
-    logger.info('Connecting to databases...');
-    await connectDatabase();
-    await connectRedis();
-    logger.info('Database connections established');
-
-    // Middlewares
-    app.use(cors());
-    app.use(express.json());
-    app.use(express.urlencoded({ extended: true }));
-
-    app.get('/health', async (req: Request, res: Response) => {
-      const mongoHealth = await getDatabaseHealth();
-      const redisHealth = await getRedisHealth();
-
-      res.json({
-        status: 'OK',
-        timestamp: new Date().toISOString(),
-        services: {
-          mongodb: mongoHealth,
-          redis: redisHealth,
-        },
-      });
-    });
+    if (process.env.NODE_ENV !== 'test') {
+      logger.info('Connecting to databases...');
+      await connectDatabase();
+      await connectRedis();
+      logger.info('Database connections established');
+    }
 
     const server = app.listen(PORT, () => {
       logger.info(`Server running on port ${PORT}`);
@@ -43,7 +57,7 @@ async function startServer() {
         try {
           await disconnectDatabase();
           await disconnectRedis();
-          
+
           logger.info('All connections closed, process terminated');
           process.exit(0);
         } catch (error) {
@@ -52,11 +66,15 @@ async function startServer() {
         }
       });
     });
-
   } catch (error) {
     logger.error('Failed to start server:', error);
     process.exit(1);
   }
 }
 
-startServer();
+// Only start server if not in test environment and this file is run directly
+if (process.env.NODE_ENV !== 'test' && require.main === module) {
+  startServer();
+}
+
+export default app;

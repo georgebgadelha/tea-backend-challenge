@@ -4,6 +4,7 @@ export interface ICategory {
   name: string;
   description: string;
   postCount: number;
+  isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -31,6 +32,10 @@ const categorySchema = new Schema<CategoryDocument>({
     type: Number,
     default: 0,
     min: [0, 'Post count cannot be negative'],
+  },
+  isActive: {
+    type: Boolean,
+    default: true,
   },
 }, {
   timestamps: true,

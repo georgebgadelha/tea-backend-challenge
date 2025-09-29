@@ -43,4 +43,7 @@ likeSchema.virtual('post', {
   justOne: true,
 });
 
+// Compound index to prevent duplicate likes from same user)
+likeSchema.index({ userId: 1, postId: 1 }, { unique: true });
+
 export const Like = mongoose.model<LikeDocument>('Like', likeSchema);
