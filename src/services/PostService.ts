@@ -586,12 +586,19 @@ export class PostService {
         const like = new Like({ userId, postId });
         await like.save({ session });
 
-        // Update post like count atomically
-        const updatedPost = await Post.findByIdAndUpdate(
-          postId,
-          { $inc: { likeCount: 1 } },
-          { new: true, session }
-        ).populate('categoryId', 'name');
+        // Find post and update like count + trigger score recalculation
+        const postToLike = await Post.findById(postId).session(session);
+        if (!postToLike) {
+          throw new Error(postErrorMessages.POST_NOT_FOUND);
+        }
+        
+        postToLike.likeCount += 1;
+        await postToLike.save({ session });
+        
+        // Populate the category for response
+        const updatedPost = await Post.findById(postId)
+          .populate('categoryId', 'name')
+          .session(session);
 
         await session.commitTransaction();
 
@@ -625,12 +632,20 @@ export class PostService {
         const like = new Like({ userId, postId });
         await like.save();
 
-        // Use atomic increment to handle concurrency - this is safe even without transactions
-        const updatedPost = await Post.findByIdAndUpdate(
-          postId,
-          { $inc: { likeCount: 1 } },
-          { new: true }
-        ).populate('categoryId', 'name');
+        // Find post and update like count + trigger score recalculation
+        const postToUpdate = await Post.findById(postId);
+        if (!postToUpdate) {
+          // Rollback the like if post not found
+          await Like.deleteOne({ userId, postId });
+          throw new Error(postErrorMessages.POST_NOT_FOUND);
+        }
+        
+        postToUpdate.likeCount += 1;
+        await postToUpdate.save();
+        
+        // Get the updated post with populated category
+        const updatedPost = await Post.findById(postId)
+          .populate('categoryId', 'name');
 
         if (!updatedPost) {
           // Rollback the like if post update failed
@@ -684,12 +699,19 @@ export class PostService {
         // Remove the like
         await Like.deleteOne({ userId, postId }).session(session);
 
-        // Update post like count atomically
-        const updatedPost = await Post.findByIdAndUpdate(
-          postId,
-          { $inc: { likeCount: -1 } },
-          { new: true, session }
-        ).populate('categoryId', 'name');
+        // Find post and update like count + trigger score recalculation
+        const postToUnlike = await Post.findById(postId).session(session);
+        if (!postToUnlike) {
+          throw new Error(postErrorMessages.POST_NOT_FOUND);
+        }
+        
+        postToUnlike.likeCount = Math.max(0, postToUnlike.likeCount - 1); // Ensure it doesn't go below 0
+        await postToUnlike.save({ session });
+        
+        // Populate the category for response
+        const updatedPost = await Post.findById(postId)
+          .populate('categoryId', 'name')
+          .session(session);
 
         await session.commitTransaction();
 
@@ -727,23 +749,25 @@ export class PostService {
       // Remove the like first
       await Like.deleteOne({ userId, postId });
 
-      // Use atomic decrement to handle concurrency
-      const updatedPost = await Post.findByIdAndUpdate(
-        postId,
-        { $inc: { likeCount: -1 } },
-        { new: true }
-      ).populate('categoryId', 'name');
+      // Find post and update like count + trigger score recalculation
+      const postToUpdate = await Post.findById(postId);
+      if (!postToUpdate) {
+        // Rollback the like deletion if post not found
+        await Like.create({ userId, postId });
+        throw new Error(postErrorMessages.POST_NOT_FOUND);
+      }
+      
+      postToUpdate.likeCount = Math.max(0, postToUpdate.likeCount - 1); // Ensure it doesn't go below 0
+      await postToUpdate.save();
+      
+      // Get the updated post with populated category
+      const updatedPost = await Post.findById(postId)
+        .populate('categoryId', 'name');
 
       if (!updatedPost) {
-        // Rollback the like deletion if post update failed
+        // This shouldn't happen, but handle gracefully
         await Like.create({ userId, postId });
         throw new Error(postErrorMessages.FAILED_TO_UPDATE_LIKE_COUNT);
-      }
-
-      // Ensure likeCount doesn't go below 0
-      if (updatedPost.likeCount < 0) {
-        await Post.findByIdAndUpdate(postId, { likeCount: 0 });
-        updatedPost.likeCount = 0;
       }
 
       logger.info('Post unliked successfully', {

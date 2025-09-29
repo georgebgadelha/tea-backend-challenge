@@ -352,24 +352,35 @@ describe('PostService', () => {
       const postId = '507f1f77bcf86cd799439012';
       const userId = 'user1';
 
-      MockedPost.findById.mockResolvedValue({ _id: postId });
-      // In test env, likePost does not call Like.findOne; it relies on unique index on save
-
-      const updated = {
+      // Mock the first findById call for existence check
+      const mockPost = {
+        _id: postId,
+        likeCount: 0,
+        save: jest.fn().mockResolvedValue({ _id: postId, likeCount: 1 })
+      };
+      
+      // Mock the final populated result
+      const populatedPost = {
         _id: postId,
         likeCount: 1,
-        toObject: () => ({ _id: postId, likeCount: 1 }),
+        categoryId: { _id: 'cat1', name: 'Technology' }
       };
-      const populate = jest.fn().mockResolvedValue(updated);
-      MockedPost.findByIdAndUpdate.mockReturnValue({ populate } as any);
+      
+      // Mock the query chain for the final populate call
+      const mockQuery = {
+        populate: jest.fn().mockResolvedValue(populatedPost)
+      };
+      
+      // Mock both findById calls (existence check, update, and final populate)
+      MockedPost.findById
+        .mockResolvedValueOnce(mockPost) // First call - existence check
+        .mockResolvedValueOnce(mockPost) // Second call - for update
+        .mockReturnValueOnce(mockQuery as any); // Third call - return query for populate
 
       const result = await postService.likePost(userId, postId);
 
-      expect(MockedPost.findByIdAndUpdate).toHaveBeenCalledWith(
-        postId,
-        { $inc: { likeCount: 1 } },
-        { new: true }
-      );
+      expect(mockPost.save).toHaveBeenCalled();
+      expect(mockQuery.populate).toHaveBeenCalledWith('categoryId', 'name');
       expect(result.liked).toBe(true);
       expect(result.likeCount).toBe(1);
     });
@@ -393,16 +404,37 @@ describe('PostService', () => {
       const postId = '507f1f77bcf86cd799439012';
       const userId = 'user1';
 
-      MockedPost.findById.mockResolvedValue({ _id: postId });
-      MockedLike.findOne.mockResolvedValue({ _id: 'like123' });
+      // Mock the first findById call for existence check
+      const mockPost = {
+        _id: postId,
+        likeCount: 1,
+        save: jest.fn().mockResolvedValue({ _id: postId, likeCount: 0 })
+      };
 
-      const updated = { _id: postId, likeCount: 0 };
-      const populate = jest.fn().mockResolvedValue(updated);
-      MockedPost.findByIdAndUpdate.mockReturnValue({ populate } as any);
+      // Mock the final populated result
+      const populatedPost = {
+        _id: postId,
+        likeCount: 0,
+        categoryId: { _id: 'cat1', name: 'Technology' }
+      };
+      
+      // Mock the query chain for the final populate call
+      const mockQuery = {
+        populate: jest.fn().mockResolvedValue(populatedPost)
+      };
+
+      MockedPost.findById
+        .mockResolvedValueOnce(mockPost) // First call - existence check
+        .mockResolvedValueOnce(mockPost) // Second call - for update
+        .mockReturnValueOnce(mockQuery as any); // Third call - return query for populate
+
+      MockedLike.findOne.mockResolvedValue({ _id: 'like123' });
 
       const result = await postService.unlikePost(userId, postId);
 
       expect(MockedLike.deleteOne).toHaveBeenCalledWith({ userId, postId });
+      expect(mockPost.save).toHaveBeenCalled();
+      expect(mockQuery.populate).toHaveBeenCalledWith('categoryId', 'name');
       expect(result.liked).toBe(false);
       expect(result.likeCount).toBe(0);
     });
@@ -411,26 +443,37 @@ describe('PostService', () => {
       const postId = '507f1f77bcf86cd799439012';
       const userId = 'user1';
 
-      MockedPost.findById.mockResolvedValue({ _id: postId });
-      MockedLike.findOne.mockResolvedValue({ _id: 'like123' });
+      // Mock the first findById call for existence check
+      const mockPost = {
+        _id: postId,
+        likeCount: 0, // Start with 0, so decrementing would make it negative
+        save: jest.fn().mockResolvedValue({ _id: postId, likeCount: 0 })
+      };
 
-      const negative = { _id: postId, likeCount: -1 };
-      const populate = jest.fn().mockResolvedValue(negative);
-      MockedPost.findByIdAndUpdate
-        .mockReturnValueOnce({ populate } as any) // decrement result
-        .mockResolvedValueOnce({}); // clamp to 0 call
+      // Mock the final populated result
+      const populatedPost = {
+        _id: postId,
+        likeCount: 0,
+        categoryId: { _id: 'cat1', name: 'Technology' }
+      };
+      
+      // Mock the query chain for the final populate call
+      const mockQuery = {
+        populate: jest.fn().mockResolvedValue(populatedPost)
+      };
+
+      MockedPost.findById
+        .mockResolvedValueOnce(mockPost) // First call - existence check
+        .mockResolvedValueOnce(mockPost) // Second call - for update
+        .mockReturnValueOnce(mockQuery as any); // Third call - return query for populate
+
+      MockedLike.findOne.mockResolvedValue({ _id: 'like123' });
 
       const result = await postService.unlikePost(userId, postId);
 
-      expect(MockedPost.findByIdAndUpdate).toHaveBeenNthCalledWith(
-        1,
-        postId,
-        { $inc: { likeCount: -1 } },
-        { new: true }
-      );
-      expect(MockedPost.findByIdAndUpdate).toHaveBeenNthCalledWith(2, postId, {
-        likeCount: 0,
-      });
+      expect(MockedLike.deleteOne).toHaveBeenCalledWith({ userId, postId });
+      expect(mockPost.save).toHaveBeenCalled();
+      expect(mockQuery.populate).toHaveBeenCalledWith('categoryId', 'name');
       expect(result.likeCount).toBe(0);
     });
 
