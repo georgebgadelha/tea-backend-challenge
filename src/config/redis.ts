@@ -43,6 +43,7 @@ export const connectRedis = async (): Promise<void> => {
   }
 };
 
+// Singleton pattern to ensure single Redis client instance
 export const getRedisClient = (): Redis => {
   if (!redisClient) {
     throw new Error('Redis client not initialized. Call connectRedis() first.');

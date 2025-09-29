@@ -11,7 +11,7 @@ export class ScoreCalculator {
   
   /**
    * Calculate post score using specified algorithm
-   * Recommended: LOGARITHMIC with freshnessWeight=1.0
+   * Recommended: BASE with freshnessWeight=1.0
    * Formula: relevanceScore + (freshnessWeight * freshnessScore)
    * 
    * @param likeCount Number of likes on the post
@@ -28,8 +28,8 @@ export class ScoreCalculator {
       const now = new Date();
       const ageInHours = (now.getTime() - createdAt.getTime()) / (1000 * 60 * 60);
       
-      // Calculate relevance score based on algorithm
-      const relevanceScore = this.calculateRelevanceScore(likeCount, config.algorithm);
+  // Calculate relevance score based on algorithm
+  const relevanceScore = this.calculateRelevanceScore(likeCount, config.algorithm, ageInHours);
       
       // Calculate freshness score with exponential decay
       const freshnessScore = this.calculateFreshnessScore(ageInHours, config.maxAgeHours);
@@ -59,27 +59,21 @@ export class ScoreCalculator {
    * @param algorithm Scoring algorithm to use
    * @returns Relevance score
    */
-  private static calculateRelevanceScore(likeCount: number, algorithm: ScoringAlgorithm): number {
+  private static calculateRelevanceScore(likeCount: number, algorithm: ScoringAlgorithm, ageInHours?: number): number {
     const safeLikeCount = Math.max(0, likeCount);
-    
     switch (algorithm) {
-      case ScoringAlgorithm.LOGARITHMIC:
-        // Logarithmic scaling: log10(likes + 1)
-        // Prevents posts with extremely high likes from dominating
+      case ScoringAlgorithm.BASE:
+        // Base scaling: log10(likes + 1)
         return Math.log10(safeLikeCount + 1);
-        
-      case ScoringAlgorithm.LINEAR:
-        // Linear scaling: likes * 0.1
-        // Direct proportional to like count but scaled down
-        return safeLikeCount * 0.1;
-        
-      case ScoringAlgorithm.SQUARE_ROOT:
-        // Square root scaling: sqrt(likes)
-        // Moderate scaling between linear and logarithmic
-        return Math.sqrt(safeLikeCount);
-        
+
+      case ScoringAlgorithm.TREND:
+        // Trend favors posts gaining likes quickly relative to age
+        // likes / (ageInHours + 1) with small scaling
+        const age = Math.max(0.1, ageInHours || 0);
+        return safeLikeCount / (age + 1);
+
       default:
-        logger.warn(`Unknown scoring algorithm: ${algorithm}, falling back to logarithmic`);
+        logger.warn(`Unknown scoring algorithm: ${algorithm}, falling back to base`);
         return Math.log10(safeLikeCount + 1);
     }
   }

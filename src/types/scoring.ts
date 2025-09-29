@@ -2,9 +2,11 @@
  * Scoring algorithm types for feed ranking
  */
 export enum ScoringAlgorithm {
-  LOGARITHMIC = 'logarithmic',
-  LINEAR = 'linear',
-  SQUARE_ROOT = 'square_root'
+  // Base algorithm = log10(likeCount + 1) + freshnessDecay(createdAt)
+  BASE = 'base',
+  // Trend surfaces posts gaining likes quickly: likes / ageInHours
+  TREND = 'trend',
+  // (A/B testing options: BASE and TREND only)
 }
 
 export enum SortOption {
@@ -26,7 +28,7 @@ export interface ScoringConfig {
 }
 
 export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
-  algorithm: ScoringAlgorithm.LOGARITHMIC,
+  algorithm: ScoringAlgorithm.BASE,
   freshnessWeight: 1.0, // equal weighting
   maxAgeHours: 168 // 7 days
 };

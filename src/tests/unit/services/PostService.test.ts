@@ -66,7 +66,7 @@ jest.mock('../../../utils/scoreCalculator', () => ({
       relevanceScore: 1.5,
       freshnessScore: 0.8,
       finalScore: 2.3,
-      algorithm: 'logarithmic',
+      algorithm: 'base',
       ageInHours: 12,
     }),
   },

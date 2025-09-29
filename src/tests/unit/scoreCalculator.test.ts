@@ -15,7 +15,7 @@ describe('ScoreCalculator - Recommended Formula', () => {
       const expectedFreshness = Math.exp(-Math.log(2) / 24 * 1); // ≈ 0.971
       const expectedTotal = expectedRelevance + expectedFreshness; // ≈ 2.971
       
-      expect(result.algorithm).toBe(ScoringAlgorithm.LOGARITHMIC);
+  expect(result.algorithm).toBe(ScoringAlgorithm.BASE);
       expect(result.relevanceScore).toBeCloseTo(expectedRelevance, 3);
       expect(result.freshnessScore).toBeCloseTo(expectedFreshness, 3);
       expect(result.finalScore).toBeCloseTo(expectedTotal, 3);

@@ -31,6 +31,9 @@ RUN npm ci --only=production && npm cache clean --force
 # Copy built application from builder stage
 COPY --from=builder /app/dist ./dist
 
+# Copy source files for Swagger JSDoc comments
+COPY --from=builder /app/src ./src
+
 # Create logs directory
 RUN mkdir -p logs
 

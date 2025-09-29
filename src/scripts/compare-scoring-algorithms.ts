@@ -4,10 +4,9 @@ import { ScoringAlgorithm, ScoringConfig, DEFAULT_SCORING_CONFIG } from '../type
 /**
  * Script de Comparação de Algoritmos de Feed
  * 
- * Este script demonstra e compara todos os três algoritmos de pontuação:
- * 1. LOGARITHMIC (recomendado): log10(likes + 1) + freshnessDecay(age)
- * 2. LINEAR: (likes * 0.1) + freshnessDecay(age)  
- * 3. SQUARE_ROOT: sqrt(likes) + freshnessDecay(age)
+ * Este script demonstra e compara os algoritmos suportados:
+ * 1. BASE (recomendado): log10(likes + 1) + freshnessDecay(age)
+ * 2. TREND: likes / (ageInHours + 1)
  * 
  * Usage: npx ts-node src/scripts/compare-scoring-algorithms.ts
  */
@@ -146,17 +145,14 @@ function displayResults(results: ComparisonResult[]): void {
     console.log('   Algoritmo     | Relevância | Frescor   | Score Final | Fórmula');
     console.log('   ' + '-'.repeat(90));
     
-    // Logarithmic (Recomendado)
-    const log = scores[ScoringAlgorithm.LOGARITHMIC];
-    console.log(`   🏆 LOGARITHMIC | ${log.relevanceScore.toFixed(4).padStart(9)} | ${log.freshnessScore.toFixed(4).padStart(8)} | ${log.finalScore.toFixed(4).padStart(10)} | log10(${post.likeCount}+1) + decay`);
-    
-    // Linear
-    const lin = scores[ScoringAlgorithm.LINEAR];
-    console.log(`   📈 LINEAR      | ${lin.relevanceScore.toFixed(4).padStart(9)} | ${lin.freshnessScore.toFixed(4).padStart(8)} | ${lin.finalScore.toFixed(4).padStart(10)} | (${post.likeCount}*0.1) + decay`);
-    
-    // Square Root
-    const sqrt = scores[ScoringAlgorithm.SQUARE_ROOT];
-    console.log(`   📊 SQUARE_ROOT | ${sqrt.relevanceScore.toFixed(4).padStart(9)} | ${sqrt.freshnessScore.toFixed(4).padStart(8)} | ${sqrt.finalScore.toFixed(4).padStart(10)} | sqrt(${post.likeCount}) + decay`);
+  // BASE (Recomendado)
+  const base = scores[ScoringAlgorithm.BASE];
+  console.log(`   🏆 BASE        | ${base.relevanceScore.toFixed(4).padStart(9)} | ${base.freshnessScore.toFixed(4).padStart(8)} | ${base.finalScore.toFixed(4).padStart(10)} | log10(${post.likeCount}+1) + decay`);
+
+  // TREND
+  const trend = scores[ScoringAlgorithm.TREND];
+  console.log(`   📈 TREND       | ${trend.relevanceScore.toFixed(4).padStart(9)} | ${trend.freshnessScore.toFixed(4).padStart(8)} | ${trend.finalScore.toFixed(4).padStart(10)} | likes/(age+1)`);
+
   });
 }
 
@@ -194,14 +190,12 @@ function analyzePerformance(results: ComparisonResult[]): Record<ScoringAlgorith
   console.log('\nAlgoritmo     | Score Médio | Score Max | Score Min | Desvio Pad | Amplitude | Características');
   console.log('-'.repeat(120));
   
-  const logAnalysis = analysis[ScoringAlgorithm.LOGARITHMIC];
-  console.log(`🏆 LOGARITHMIC | ${logAnalysis.avg.toString().padStart(10)} | ${logAnalysis.max.toString().padStart(8)} | ${logAnalysis.min.toString().padStart(8)} | ${logAnalysis.stdDev.toString().padStart(9)} | ${logAnalysis.range.toString().padStart(8)} | Balanceado, previne dominância`);
-  
-  const linAnalysis = analysis[ScoringAlgorithm.LINEAR];
-  console.log(`📈 LINEAR      | ${linAnalysis.avg.toString().padStart(10)} | ${linAnalysis.max.toString().padStart(8)} | ${linAnalysis.min.toString().padStart(8)} | ${linAnalysis.stdDev.toString().padStart(9)} | ${linAnalysis.range.toString().padStart(8)} | Proporção direta aos likes`);
-  
-  const sqrtAnalysis = analysis[ScoringAlgorithm.SQUARE_ROOT];
-  console.log(`📊 SQUARE_ROOT | ${sqrtAnalysis.avg.toString().padStart(10)} | ${sqrtAnalysis.max.toString().padStart(8)} | ${sqrtAnalysis.min.toString().padStart(8)} | ${sqrtAnalysis.stdDev.toString().padStart(9)} | ${sqrtAnalysis.range.toString().padStart(8)} | Escala moderada`);
+  const baseAnalysis = analysis[ScoringAlgorithm.BASE];
+  console.log(`🏆 BASE        | ${baseAnalysis.avg.toString().padStart(10)} | ${baseAnalysis.max.toString().padStart(8)} | ${baseAnalysis.min.toString().padStart(8)} | ${baseAnalysis.stdDev.toString().padStart(9)} | ${baseAnalysis.range.toString().padStart(8)} | Balanceado, previne dominância`);
+
+  const trendAnalysis = analysis[ScoringAlgorithm.TREND];
+  console.log(`📈 TREND       | ${trendAnalysis.avg.toString().padStart(10)} | ${trendAnalysis.max.toString().padStart(8)} | ${trendAnalysis.min.toString().padStart(8)} | ${trendAnalysis.stdDev.toString().padStart(9)} | ${trendAnalysis.range.toString().padStart(8)} | Surfaces fast-rising posts`);
+
   
   return analysis as Record<ScoringAlgorithm, any>;
 }
@@ -256,7 +250,7 @@ function demonstrateRecommendedFormula(): void {
     const createdAt = new Date(now.getTime() - example.hours * 60 * 60 * 1000);
     const config: ScoringConfig = {
       ...DEFAULT_SCORING_CONFIG,
-      algorithm: ScoringAlgorithm.LOGARITHMIC
+      algorithm: ScoringAlgorithm.BASE
     };
     
     const score = ScoreCalculator.calculateScore(example.likes, createdAt, config);
@@ -332,26 +326,19 @@ function main(): void {
   console.log('\n' + '='.repeat(120));
   console.log('💡 RESUMO & RECOMENDAÇÕES');
   console.log('='.repeat(120));
-  console.log('\n🏆 Algoritmo LOGARITHMIC (RECOMENDADO):');
+  console.log('\n🏆 Algoritmo BASE (RECOMENDADO):');
   console.log('   ✅ Previne posts virais de dominar completamente o feed');
   console.log('   ✅ Dá chances justas para posts novos com engajamento moderado');
   console.log('   ✅ Pontuação balanceada que funciona bem em diferentes cenários');
   console.log('   ✅ Desvio padrão mostra boa distribuição de scores');
   
-  console.log('\n📈 Algoritmo LINEAR:');
-  console.log('   ⚠️  Proporção direta pode levar à dominância viral descontrolada');
-  console.log('   ⚠️  Posts novos com poucos likes são enterrados rapidamente');
-  console.log('   ✅ Simples de entender e implementar');
-  console.log('   ✅ Bom para plataformas focadas em engajamento');
-  
-  console.log('\n📊 Algoritmo SQUARE_ROOT:');
-  console.log('   ✅ Meio termo entre logarítmico e linear');
-  console.log('   ✅ Melhor que linear, mas não tão balanceado quanto logarítmico');
-  console.log('   ⚠️  Ainda permite alguma dominância por posts de alto engajamento');
+  console.log('\n📈 Algoritmo TREND:');
+  console.log('   ✅ Surface posts que estão crescendo rapidamente em engajamento');
+  console.log('   ⚠️  Pode favor older posts with small bursts if not weighted properly');
   
   console.log('\n🎯 CONCLUSÃO:');
-  console.log('   O algoritmo LOGARITHMIC fornece o melhor equilíbrio para a maioria das plataformas sociais.');
-  console.log('   Use-o como padrão, mas permita troca de algoritmo para testes A/B.');
+  console.log('   O algoritmo BASE fornece o melhor equilíbrio para a maioria das plataformas sociais.');
+  console.log('   Use TREND para cenários específicos e testes A/B.');
   
   console.log('\n✨ Comparação completa! Use estes dados para suas decisões de load testing.\n');
 }

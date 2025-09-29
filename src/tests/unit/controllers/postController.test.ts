@@ -189,7 +189,7 @@ describe('Post Controller Unit Tests', () => {
           sortBy: undefined, 
           order: undefined,
           scoringConfig: {
-            algorithm: 'logarithmic',
+            algorithm: 'base',
             freshnessWeight: 1,
             maxAgeHours: 168
           }
@@ -200,8 +200,8 @@ describe('Post Controller Unit Tests', () => {
         success: true,
         data: mockPosts,
         pagination: mockResult.pagination,
-        scoring: {
-          algorithm: 'logarithmic',
+          scoring: {
+          algorithm: 'base',
           freshnessWeight: 1,
           maxAgeHours: 168
         }
@@ -243,7 +243,7 @@ describe('Post Controller Unit Tests', () => {
           sortBy: 'likeCount', 
           order: 'desc',
           scoringConfig: {
-            algorithm: 'logarithmic',
+            algorithm: 'base',
             freshnessWeight: 1,
             maxAgeHours: 168
           }
@@ -255,7 +255,7 @@ describe('Post Controller Unit Tests', () => {
         data: mockPosts,
         pagination: mockResult.pagination,
         scoring: {
-          algorithm: 'logarithmic',
+          algorithm: 'base',
           freshnessWeight: 1,
           maxAgeHours: 168
         }

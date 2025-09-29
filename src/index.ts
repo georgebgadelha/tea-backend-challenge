@@ -7,6 +7,7 @@ import {
   disconnectDatabase,
 } from './config/database';
 import { connectRedis, getRedisHealth, disconnectRedis } from './config/redis';
+import { setupSwagger } from './config/swagger';
 import { logger } from './utils/logger';
 import { setupRoutes } from './routes';
 import { errorHandler } from './middleware/errorHandler';
@@ -19,8 +20,53 @@ app.use(cors.default());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Setup Swagger documentation
+setupSwagger(app);
+
 setupRoutes(app);
 
+/**
+ * @swagger
+ * /health:
+ *   get:
+ *     summary: Health check endpoint
+ *     tags: [Health]
+ *     responses:
+ *       200:
+ *         description: Service health status
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: "OK"
+ *                 timestamp:
+ *                   type: string
+ *                   format: date-time
+ *                 services:
+ *                   type: object
+ *                   properties:
+ *                     mongodb:
+ *                       type: object
+ *                       properties:
+ *                         status:
+ *                           type: string
+ *                           example: "connected"
+ *                         responseTime:
+ *                           type: number
+ *                           example: 5
+ *                     redis:
+ *                       type: object
+ *                       properties:
+ *                         status:
+ *                           type: string
+ *                           example: "connected"
+ *                         responseTime:
+ *                           type: number
+ *                           example: 2
+ */
 app.get('/health', async (req: Request, res: Response) => {
   const mongoHealth = await getDatabaseHealth();
   const redisHealth = await getRedisHealth();
