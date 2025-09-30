@@ -325,77 +325,118 @@ export class PostService {
       throw new Error(postErrorMessages.CATEGORY_NOT_ACTIVE);
     }
 
-    // Use transactions only if supported (not in test env or standalone MongoDB)
-    const useTransactions = process.env.NODE_ENV !== 'test';
-    
-    if (useTransactions) {
-      const session = await mongoose.startSession();
-      
+    // Try to use transactions when not in test, but gracefully fall back when
+    // the MongoDB deployment doesn't support them (standalone server).
+    let session: mongoose.ClientSession | null = null;
+    const wantTransactions = process.env.NODE_ENV !== 'test';
+
+    if (wantTransactions) {
       try {
-        session.startTransaction();
-
-        const post = new Post({
-          title,
-          content,
-          categoryId,
-          authorId
-        });
-
-        await post.save({ session });
-
-        // Update category post count
-        await Category.findByIdAndUpdate(
-          categoryId,
-          { $inc: { postCount: 1 } },
-          { session }
-        );
-
-        await session.commitTransaction();
-
-        // Populate the category for the response (after transaction)
-        await post.populate('categoryId', 'name description');
-
-        logger.info('Post created successfully', {
-          postId: post._id,
-          authorId,
-          categoryId
-        });
-
-        return post;
-      } catch (error) {
-        await session.abortTransaction();
-        throw error;
-      } finally {
-        session.endSession();
+        session = await mongoose.startSession();
+      } catch (err) {
+        // Starting a session failed (likely standalone MongoDB). Fall back.
+        logger.warn('Transactions not supported by MongoDB deployment (startSession failed), falling back to non-transactional create', { err: (err as Error).message });
+        session = null;
       }
-    } else {
-      // No transactions for test environment
-      const post = new Post({
-        title,
-        content,
-        categoryId,
-        authorId
-      });
-
-      await post.save();
-
-      // Update category post count
-      await Category.findByIdAndUpdate(
-        categoryId,
-        { $inc: { postCount: 1 } }
-      );
-
-      // Populate the category for the response
-      await post.populate('categoryId', 'name description');
-
-      logger.info('Post created successfully', {
-        postId: post._id,
-        authorId,
-        categoryId
-      });
-
-      return post;
     }
+
+    // If we obtained a session, attempt to start a transaction. If starting
+    // the transaction fails (e.g., standalone MongoDB raises code 20), cleanly
+    // end the session and continue with the non-transactional path.
+    if (session) {
+      try {
+        try {
+          session.startTransaction();
+        } catch (txnErr: any) {
+          // Transactions not supported by deployment (commonly code 20). Fall back.
+          logger.warn('Transactions not supported by MongoDB deployment (startTransaction failed), falling back to non-transactional create', { err: txnErr?.message || txnErr });
+          try {
+            session.endSession();
+          } catch (endErr) {
+            logger.debug('Failed to end session after startTransaction failure', { err: (endErr as Error).message });
+          }
+          session = null;
+        }
+
+        if (session) {
+          const post = new Post({
+            title,
+            content,
+            categoryId,
+            authorId
+          });
+
+          await post.save({ session });
+
+          // Update category post count
+          await Category.findByIdAndUpdate(
+            categoryId,
+            { $inc: { postCount: 1 } },
+            { session }
+          );
+
+          await session.commitTransaction();
+
+          // Populate the category for the response (after transaction)
+          await post.populate('categoryId', 'name description');
+
+          logger.info('Post created successfully', {
+            postId: post._id,
+            authorId,
+            categoryId
+          });
+
+          return post;
+        }
+      } catch (error: any) {
+        // If the error indicates transactions are not supported (code 20),
+        // swallow and continue with the non-transactional fallback.
+        const isTxnUnsupported = error && (error.code === 20 || error.codeName === 'IllegalOperation');
+        try {
+          if (session) await session.abortTransaction();
+        } catch (abortErr) {
+          logger.warn('Failed to abort transaction', { err: (abortErr as Error).message });
+        }
+        if (!isTxnUnsupported) {
+          throw error;
+        } else {
+          logger.warn('Transaction not supported during createPost execution, falling back to non-transactional path', { err: error?.message || error });
+        }
+      } finally {
+        try {
+          if (session) session.endSession();
+        } catch (endErr) {
+          logger.warn('Failed to end session', { err: (endErr as Error).message });
+        }
+      }
+    }
+
+    // Non-transactional fallback (either in test env or standalone MongoDB)
+    const post = new Post({
+      title,
+      content,
+      categoryId,
+      authorId
+    });
+
+    await post.save();
+
+    // Update category post count
+    await Category.findByIdAndUpdate(
+      categoryId,
+      { $inc: { postCount: 1 } }
+    );
+
+    // Populate the category for the response
+    await post.populate('categoryId', 'name description');
+
+    logger.info('Post created successfully (non-transactional)', {
+      postId: post._id,
+      authorId,
+      categoryId
+    });
+
+    return post;
   }
 
   async getPostById(postId: string) {
@@ -561,203 +602,111 @@ export class PostService {
   }
 
   async likePost(userId: string, postId: string): Promise<LikeResult> {
-    // Use transactions only if supported (not in test env or standalone MongoDB)
-    const useTransactions = process.env.NODE_ENV !== 'test';
-    
-    if (useTransactions) {
-      const session = await mongoose.startSession();
-      
+    // Use transactions when available (not in test env). If sessions/transactions
+    // are not supported by the MongoDB deployment, fall back to the
+    // non-transactional path below.
+    const wantTransactions = process.env.NODE_ENV !== 'test';
+
+    let session: mongoose.ClientSession | null = null;
+    if (wantTransactions) {
       try {
-        session.startTransaction();
-
-        // Check if post exists
-        const post = await Post.findById(postId).session(session);
-        if (!post) {
-          throw new Error(postErrorMessages.POST_NOT_FOUND);
-        }
-
-        // Check if user already liked this post
-        const existingLike = await Like.findOne({ userId, postId }).session(session);
-        if (existingLike) {
-          throw new Error(postErrorMessages.POST_ALREADY_LIKED);
-        }
-
-        // Create new like
-        const like = new Like({ userId, postId });
-        await like.save({ session });
-
-        // Find post and update like count + trigger score recalculation
-        const postToLike = await Post.findById(postId).session(session);
-        if (!postToLike) {
-          throw new Error(postErrorMessages.POST_NOT_FOUND);
-        }
-        
-        postToLike.likeCount += 1;
-        await postToLike.save({ session });
-        
-        // Populate the category for response
-        const updatedPost = await Post.findById(postId)
-          .populate('categoryId', 'name')
-          .session(session);
-
-        await session.commitTransaction();
-
-        logger.info('Post liked successfully', {
-          postId,
-          userId,
-          newLikeCount: updatedPost?.likeCount
-        });
-
-        return {
-          liked: true,
-          likeCount: updatedPost?.likeCount || 0,
-          post: updatedPost
-        };
-      } catch (error) {
-        await session.abortTransaction();
-        throw error;
-      } finally {
-        session.endSession();
-      }
-    } else {
-      // No transactions for test environment - but use atomic operations
-      // Check if post exists
-      const post = await Post.findById(postId);
-      if (!post) {
-        throw new Error(postErrorMessages.POST_NOT_FOUND);
-      }
-
-      try {
-        // Create new like - unique index will prevent duplicates
-        const like = new Like({ userId, postId });
-        await like.save();
-
-        // Find post and update like count + trigger score recalculation
-        const postToUpdate = await Post.findById(postId);
-        if (!postToUpdate) {
-          // Rollback the like if post not found
-          await Like.deleteOne({ userId, postId });
-          throw new Error(postErrorMessages.POST_NOT_FOUND);
-        }
-        
-        postToUpdate.likeCount += 1;
-        await postToUpdate.save();
-        
-        // Get the updated post with populated category
-        const updatedPost = await Post.findById(postId)
-          .populate('categoryId', 'name');
-
-        if (!updatedPost) {
-          // Rollback the like if post update failed
-          await Like.deleteOne({ userId, postId });
-          throw new Error(postErrorMessages.FAILED_TO_UPDATE_LIKE_COUNT);
-        }
-
-        logger.info('Post liked successfully', {
-          postId,
-          userId,
-          newLikeCount: updatedPost.likeCount
-        });
-
-        return {
-          liked: true,
-          likeCount: updatedPost.likeCount,
-          post: updatedPost
-        };
-      } catch (error: any) {
-        // Handle duplicate key error (user already liked this post)
-        if (error.code === 11000) {
-          throw new Error(postErrorMessages.POST_ALREADY_LIKED);
-        }
-        throw error;
+        session = await mongoose.startSession();
+      } catch (err) {
+        logger.warn('Transactions not supported by MongoDB deployment (startSession failed), falling back to non-transactional like', { err: (err as Error).message });
+        session = null;
       }
     }
-  }
 
-  async unlikePost(userId: string, postId: string): Promise<LikeResult> {
-    // Use transactions only if supported (not in test env or standalone MongoDB)
-    const useTransactions = process.env.NODE_ENV !== 'test';
-    
-    if (useTransactions) {
-      const session = await mongoose.startSession();
-      
+    if (session) {
       try {
-        session.startTransaction();
-
-        // Check if post exists
-        const post = await Post.findById(postId).session(session);
-        if (!post) {
-          throw new Error(postErrorMessages.POST_NOT_FOUND);
+        try {
+          session.startTransaction();
+        } catch (txnErr: any) {
+          logger.warn('Transactions not supported by MongoDB deployment (startTransaction failed), falling back to non-transactional like', { err: txnErr?.message || txnErr });
+          try { session.endSession(); } catch (_) {}
+          session = null;
         }
 
-        // Check if user has liked this post
-        const existingLike = await Like.findOne({ userId, postId }).session(session);
-        if (!existingLike) {
-          throw new Error(postErrorMessages.POST_NOT_LIKED);
+        if (session) {
+          // Check if post exists
+          const post = await Post.findById(postId).session(session);
+          if (!post) {
+            throw new Error(postErrorMessages.POST_NOT_FOUND);
+          }
+
+          // Check if user already liked this post
+          const existingLike = await Like.findOne({ userId, postId }).session(session);
+          if (existingLike) {
+            throw new Error(postErrorMessages.POST_ALREADY_LIKED);
+          }
+
+          // Create new like
+          const like = new Like({ userId, postId });
+          await like.save({ session });
+
+          // Find post and update like count + trigger score recalculation
+          const postToLike = await Post.findById(postId).session(session);
+          if (!postToLike) {
+            throw new Error(postErrorMessages.POST_NOT_FOUND);
+          }
+          
+          postToLike.likeCount += 1;
+          await postToLike.save({ session });
+          
+          // Populate the category for response
+          const updatedPost = await Post.findById(postId)
+            .populate('categoryId', 'name')
+            .session(session);
+
+          await session.commitTransaction();
+
+          logger.info('Post liked successfully', {
+            postId,
+            userId,
+            newLikeCount: updatedPost?.likeCount
+          });
+
+          return {
+            liked: true,
+            likeCount: updatedPost?.likeCount || 0,
+            post: updatedPost
+          };
         }
-
-        // Remove the like
-        await Like.deleteOne({ userId, postId }).session(session);
-
-        // Find post and update like count + trigger score recalculation
-        const postToUnlike = await Post.findById(postId).session(session);
-        if (!postToUnlike) {
-          throw new Error(postErrorMessages.POST_NOT_FOUND);
+      } catch (error: any) {
+        const isTxnUnsupported = error && (error.code === 20 || error.codeName === 'IllegalOperation');
+        try { if (session) await session.abortTransaction(); } catch (_) {}
+        if (!isTxnUnsupported) {
+          throw error;
+        } else {
+          logger.warn('Transaction not supported during likePost execution, falling back to non-transactional path', { err: error?.message || error });
         }
-        
-        postToUnlike.likeCount = Math.max(0, postToUnlike.likeCount - 1); // Ensure it doesn't go below 0
-        await postToUnlike.save({ session });
-        
-        // Populate the category for response
-        const updatedPost = await Post.findById(postId)
-          .populate('categoryId', 'name')
-          .session(session);
-
-        await session.commitTransaction();
-
-        logger.info('Post unliked successfully', {
-          postId,
-          userId,
-          newLikeCount: updatedPost?.likeCount
-        });
-
-        return {
-          liked: false,
-          likeCount: updatedPost?.likeCount || 0,
-          post: updatedPost
-        };
-      } catch (error) {
-        await session.abortTransaction();
-        throw error;
       } finally {
-        session.endSession();
+        try { if (session) session.endSession(); } catch (_) {}
       }
-    } else {
-      // No transactions for test environment - but use atomic operations
-      // Check if post exists
-      const post = await Post.findById(postId);
-      if (!post) {
-        throw new Error(postErrorMessages.POST_NOT_FOUND);
-      }
+    }
 
-      // Check if user has liked this post
-      const existingLike = await Like.findOne({ userId, postId });
-      if (!existingLike) {
-        throw new Error(postErrorMessages.POST_NOT_LIKED);
-      }
+    // Non-transactional fallback (either in test env or transactions unsupported)
+    // Use atomic operations and best-effort rollback on partial failures.
+    // Check if post exists
+    const post = await Post.findById(postId);
+    if (!post) {
+      throw new Error(postErrorMessages.POST_NOT_FOUND);
+    }
 
-      // Remove the like first
-      await Like.deleteOne({ userId, postId });
+    try {
+      // Create new like - unique index will prevent duplicates
+      const like = new Like({ userId, postId });
+      await like.save();
 
       // Find post and update like count + trigger score recalculation
       const postToUpdate = await Post.findById(postId);
       if (!postToUpdate) {
-        // Rollback the like deletion if post not found
-        await Like.create({ userId, postId });
+        // Rollback the like if post not found
+        await Like.deleteOne({ userId, postId });
         throw new Error(postErrorMessages.POST_NOT_FOUND);
       }
       
-      postToUpdate.likeCount = Math.max(0, postToUpdate.likeCount - 1); // Ensure it doesn't go below 0
+      postToUpdate.likeCount += 1;
       await postToUpdate.save();
       
       // Get the updated post with populated category
@@ -765,23 +714,163 @@ export class PostService {
         .populate('categoryId', 'name');
 
       if (!updatedPost) {
-        // This shouldn't happen, but handle gracefully
-        await Like.create({ userId, postId });
+        // Rollback the like if post update failed
+        await Like.deleteOne({ userId, postId });
         throw new Error(postErrorMessages.FAILED_TO_UPDATE_LIKE_COUNT);
       }
 
-      logger.info('Post unliked successfully', {
+      logger.info('Post liked successfully', {
         postId,
         userId,
         newLikeCount: updatedPost.likeCount
       });
 
       return {
-        liked: false,
+        liked: true,
         likeCount: updatedPost.likeCount,
         post: updatedPost
       };
+    } catch (error: any) {
+      // Handle duplicate key error (user already liked this post)
+      if (error.code === 11000) {
+        throw new Error(postErrorMessages.POST_ALREADY_LIKED);
+      }
+      throw error;
     }
+    
+  }
+
+  async unlikePost(userId: string, postId: string): Promise<LikeResult> {
+    // Use transactions when available (not in test env). If sessions/transactions
+    // are not supported by the MongoDB deployment, fall back to the
+    // non-transactional path below.
+    const wantTransactions = process.env.NODE_ENV !== 'test';
+
+    let session: mongoose.ClientSession | null = null;
+    if (wantTransactions) {
+      try {
+        session = await mongoose.startSession();
+      } catch (err) {
+        logger.warn('Transactions not supported by MongoDB deployment (startSession failed), falling back to non-transactional unlike', { err: (err as Error).message });
+        session = null;
+      }
+    }
+
+    if (session) {
+      try {
+        try {
+          session.startTransaction();
+        } catch (txnErr: any) {
+          logger.warn('Transactions not supported by MongoDB deployment (startTransaction failed), falling back to non-transactional unlike', { err: txnErr?.message || txnErr });
+          try { session.endSession(); } catch (_) {}
+          session = null;
+        }
+
+        if (session) {
+          // Check if post exists
+          const post = await Post.findById(postId).session(session);
+          if (!post) {
+            throw new Error(postErrorMessages.POST_NOT_FOUND);
+          }
+
+          // Check if user has liked this post
+          const existingLike = await Like.findOne({ userId, postId }).session(session);
+          if (!existingLike) {
+            throw new Error(postErrorMessages.POST_NOT_LIKED);
+          }
+
+          // Remove the like
+          await Like.deleteOne({ userId, postId }).session(session);
+
+          // Find post and update like count + trigger score recalculation
+          const postToUnlike = await Post.findById(postId).session(session);
+          if (!postToUnlike) {
+            throw new Error(postErrorMessages.POST_NOT_FOUND);
+          }
+          
+          postToUnlike.likeCount = Math.max(0, postToUnlike.likeCount - 1); // Ensure it doesn't go below 0
+          await postToUnlike.save({ session });
+          
+          // Populate the category for response
+          const updatedPost = await Post.findById(postId)
+            .populate('categoryId', 'name')
+            .session(session);
+
+          await session.commitTransaction();
+
+          logger.info('Post unliked successfully', {
+            postId,
+            userId,
+            newLikeCount: updatedPost?.likeCount
+          });
+
+          return {
+            liked: false,
+            likeCount: updatedPost?.likeCount || 0,
+            post: updatedPost
+          };
+        }
+      } catch (error: any) {
+        const isTxnUnsupported = error && (error.code === 20 || error.codeName === 'IllegalOperation');
+        try { if (session) await session.abortTransaction(); } catch (_) {}
+        if (!isTxnUnsupported) {
+          throw error;
+        } else {
+          logger.warn('Transaction not supported during unlikePost execution, falling back to non-transactional path', { err: error?.message || error });
+        }
+      } finally {
+        try { if (session) session.endSession(); } catch (_) {}
+      }
+    }
+
+    // Non-transactional fallback (either in test env or transactions unsupported)
+    // Check if post exists
+    const post = await Post.findById(postId);
+    if (!post) {
+      throw new Error(postErrorMessages.POST_NOT_FOUND);
+    }
+
+    // Check if user has liked this post
+    const existingLike = await Like.findOne({ userId, postId });
+    if (!existingLike) {
+      throw new Error(postErrorMessages.POST_NOT_LIKED);
+    }
+
+    // Remove the like first
+    await Like.deleteOne({ userId, postId });
+
+    // Find post and update like count + trigger score recalculation
+    const postToUpdate = await Post.findById(postId);
+    if (!postToUpdate) {
+      // Rollback the like deletion if post not found
+      await Like.create({ userId, postId });
+      throw new Error(postErrorMessages.POST_NOT_FOUND);
+    }
+    
+    postToUpdate.likeCount = Math.max(0, postToUpdate.likeCount - 1); // Ensure it doesn't go below 0
+    await postToUpdate.save();
+    
+    // Get the updated post with populated category
+    const updatedPost = await Post.findById(postId)
+      .populate('categoryId', 'name');
+
+    if (!updatedPost) {
+      // This shouldn't happen, but handle gracefully
+      await Like.create({ userId, postId });
+      throw new Error(postErrorMessages.FAILED_TO_UPDATE_LIKE_COUNT);
+    }
+
+    logger.info('Post unliked successfully', {
+      postId,
+      userId,
+      newLikeCount: updatedPost.likeCount
+    });
+
+    return {
+      liked: false,
+      likeCount: updatedPost.likeCount,
+      post: updatedPost
+    };
   }
 
   private buildSortOptions(sortBy?: SortOption, order?: SortOrder) {

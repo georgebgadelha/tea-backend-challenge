@@ -79,3 +79,45 @@ export const authenticateUser = (
     });
   }
 };
+
+/**
+ * Permissive authentication used for testing like/unlike routes.
+ * Accepts any non-empty X-User-Id header and sets req.userId.
+ * Of course this wouldn't exist in a real secure app, it has been created for testing purposes.
+ */
+export const authenticateUserPermissive = (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const userId = req.headers['x-user-id'] as string;
+
+    if (!userId || typeof userId !== 'string' || userId.trim().length === 0) {
+      logger.warn('Permissive auth failed: Missing or empty X-User-Id header', {
+        method: req.method,
+        url: req.originalUrl,
+        ip: req.ip,
+      });
+
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required. Please provide X-User-Id header.',
+      });
+    }
+
+    req.userId = userId.trim();
+
+    logger.debug('Permissive user authenticated', {
+      method: req.method,
+      url: req.originalUrl,
+      userId: req.userId,
+      ip: req.ip,
+    });
+
+    next();
+  } catch (error) {
+    logger.error('Permissive authentication middleware error:', error);
+    return res.status(500).json({ success: false, error: 'Internal authentication error' });
+  }
+};

@@ -81,6 +81,12 @@ router.get('/active', authenticateUser, getActiveCategories);
  *         application/json:
  *           schema:
  *             $ref: '#/components/schemas/CreateCategoryRequest'
+ *           examples:
+ *             sampleCreateCategory:
+ *               summary: Create category example
+ *               value:
+ *                 name: "Green Tea"
+ *                 description: "All about green tea varieties and brewing techniques"
  *     responses:
  *       201:
  *         description: Category created successfully
@@ -93,6 +99,18 @@ router.get('/active', authenticateUser, getActiveCategories);
  *                   properties:
  *                     data:
  *                       $ref: '#/components/schemas/Category'
+ *             examples:
+ *               createdCategory:
+ *                 summary: Created category example
+ *                 value:
+ *                   success: true
+ *                   data:
+ *                     _id: "64f5a1b2c3d4e5f6a7b8c9d2"
+ *                     name: "Green Tea"
+ *                     description: "All about green tea varieties and brewing techniques"
+ *                     isActive: true
+ *                     createdAt: "2025-09-29T12:00:00.000Z"
+ *                     updatedAt: "2025-09-29T12:00:00.000Z"
  *       400:
  *         description: Invalid input
  *       401:
@@ -130,6 +148,11 @@ router.post('/', authenticateUser, createCategory);
  *         application/json:
  *           schema:
  *             $ref: '#/components/schemas/UpdateCategoryStatusRequest'
+ *           examples:
+ *             sampleUpdateStatus:
+ *               summary: Update category status example
+ *               value:
+ *                 isActive: false
  *     responses:
  *       200:
  *         description: Category status updated successfully
@@ -142,6 +165,17 @@ router.post('/', authenticateUser, createCategory);
  *                   properties:
  *                     data:
  *                       $ref: '#/components/schemas/Category'
+ *             examples:
+ *               updatedCategory:
+ *                 summary: Updated category example
+ *                 value:
+ *                   success: true
+ *                   data:
+ *                     _id: "64f5a1b2c3d4e5f6a7b8c9d2"
+ *                     name: "Green Tea"
+ *                     description: "All about green tea varieties and brewing techniques"
+ *                     isActive: false
+ *                     updatedAt: "2025-09-29T12:30:00.000Z"
  *       400:
  *         description: Invalid input
  *       401:

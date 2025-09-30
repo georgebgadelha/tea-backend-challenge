@@ -8,6 +8,7 @@ import {
 import { getRedisClient } from '../config/redis';
 import { Post } from '../models/Post';
 import { logger } from '../utils/logger';
+import { postErrorMessages } from '../utils/errorMessages';
 import { SortOption } from '../types/scoring';
 import mongoose from 'mongoose';
 
@@ -133,14 +134,27 @@ export class RedisPostService extends PostService {
   }
 
   async likePost(userId: string, postId: string): Promise<LikeResult> {
-    // Execute the like operation
+    const userLikeKey = `user_like:${postId}:${userId}`;
+
+    try {
+      const exists = await this.redis.get(userLikeKey);
+      if (exists) {
+        throw new Error(postErrorMessages.POST_ALREADY_LIKED);
+      }
+    } catch (err: any) {
+      if (err && err.message === postErrorMessages.POST_ALREADY_LIKED) {
+        throw err;
+      }
+      logger.debug('Failed to check user_like key in Redis (non-fatal), falling back to DB', { err });
+    }
+
     const result = await super.likePost(userId, postId);
 
     try {
-      // Update hot posts rankings
+      await this.redis.set(userLikeKey, '1');
+
       await this.updateHotPostRankings(result.post);
 
-      // Invalidate relevant caches
       await this.invalidateRelatedCaches(result.post.categoryId._id);
 
       logger.info('Redis operations completed for like', {
@@ -149,21 +163,31 @@ export class RedisPostService extends PostService {
       });
     } catch (error) {
       logger.error('Redis operations failed for like', { postId, error });
-      // Don't fail the like operation if Redis fails
     }
 
     return result;
   }
 
   async unlikePost(userId: string, postId: string): Promise<LikeResult> {
-    // Execute the unlike operation
+    const userLikeKey = `user_like:${postId}:${userId}`;
+    try {
+      const exists = await this.redis.get(userLikeKey);
+      if (!exists) {
+        throw new Error(postErrorMessages.POST_NOT_LIKED);
+      }
+    } catch (err: any) {
+      if (err && err.message === postErrorMessages.POST_NOT_LIKED) {
+        throw err;
+      }
+      logger.debug('Failed to check user_like key in Redis (non-fatal), falling back to DB', { err });
+    }
     const result = await super.unlikePost(userId, postId);
 
     try {
-      // Update hot posts rankings
+      await this.redis.del(userLikeKey);
+
       await this.updateHotPostRankings(result.post);
 
-      // Invalidate relevant caches
       await this.invalidateRelatedCaches(result.post.categoryId._id);
 
       logger.info('Redis operations completed for unlike', {
@@ -172,23 +196,19 @@ export class RedisPostService extends PostService {
       });
     } catch (error) {
       logger.error('Redis operations failed for unlike', { postId, error });
-      // Don't fail the unlike operation if Redis fails
     }
 
     return result;
   }
 
   async createPost(data: any) {
-    // Execute the create operation
     const post = await super.createPost(data);
 
     try {
-      // Add to hot posts if score is high enough
       if (post.score >= this.CONFIG.MIN_HOT_POST_SCORE) {
         await this.updateHotPostRankings(post);
       }
 
-      // Invalidate relevant caches
       await this.invalidateRelatedCaches(post.categoryId.toString());
 
       logger.info('Redis operations completed for create post', {
@@ -222,7 +242,6 @@ export class RedisPostService extends PostService {
       _id: { $in: postIds.map((id) => new mongoose.Types.ObjectId(id)) },
     }).populate('categoryId', 'name description');
 
-    // Maintain Redis order
     const postMap = new Map(posts.map((post) => [post._id.toString(), post]));
     return postIds.map((id) => postMap.get(id)).filter(Boolean);
   }
@@ -234,13 +253,10 @@ export class RedisPostService extends PostService {
   ): Promise<PostsResult> {
     const modifiedFilters = { ...filters };
 
-    // Build exclusion filter
     const excludeObjectIds = excludeIds.map(
       (id) => new mongoose.Types.ObjectId(id)
     );
 
-    // This would require modifying the base PostService to support exclusion
-    // For now, we'll fetch more and filter client-side (not ideal for production)
     const result = await super.getPosts(modifiedFilters, {
       page: 1,
       limit: limit * 2,
@@ -269,36 +285,29 @@ export class RedisPostService extends PostService {
 
     const pipeline = this.redis.pipeline();
 
-    // Update global hot posts
     if (score >= this.CONFIG.MIN_HOT_POST_SCORE) {
       pipeline.zadd(this.REDIS_KEYS.HOT_POSTS_GLOBAL, score, postId);
-      // Keep only top N posts
       pipeline.zremrangebyrank(
         this.REDIS_KEYS.HOT_POSTS_GLOBAL,
         0,
         -(this.CONFIG.MAX_HOT_POSTS_GLOBAL + 1)
       );
     } else {
-      // Remove from hot posts if score is too low
       pipeline.zrem(this.REDIS_KEYS.HOT_POSTS_GLOBAL, postId);
     }
 
-    // Update category hot posts
     const categoryKey = this.REDIS_KEYS.HOT_POSTS_CATEGORY(categoryId);
     if (score >= this.CONFIG.MIN_HOT_POST_SCORE) {
       pipeline.zadd(categoryKey, score, postId);
-      // Keep only top N posts per category
       pipeline.zremrangebyrank(
         categoryKey,
         0,
         -(this.CONFIG.MAX_HOT_POSTS_PER_CATEGORY + 1)
       );
     } else {
-      // Remove from hot posts if score is too low
       pipeline.zrem(categoryKey, postId);
     }
 
-    // Set TTL for cleanup
     pipeline.expire(
       this.REDIS_KEYS.HOT_POSTS_GLOBAL,
       this.CONFIG.HOT_POSTS_TTL
@@ -311,7 +320,6 @@ export class RedisPostService extends PostService {
   }
 
   private async invalidateRelatedCaches(categoryId: string): Promise<void> {
-    // Invalidate score-based feed caches that would be affected
     const patterns = [
       `feed:all:*:score:*`,
       `feed:all:*:relevance:*`,

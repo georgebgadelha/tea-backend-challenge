@@ -15,7 +15,7 @@
     "lint": "eslint src/**/*.ts",
     "lint:fix": "eslint src/**/*.ts --fix",
     "seed": "ts-node src/scripts/seed.ts",
-    "compare-algorithms": "ts-node src/scripts/compare-scoring-algorithms.ts",
+  "export:swagger": "ts-node src/scripts/export-swagger.ts",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f",
