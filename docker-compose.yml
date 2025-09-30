@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # MongoDB Database
+  # MongoDB Database (Replica Set)
   mongodb:
     image: mongo:8.0
     container_name: tea-mongodb
@@ -12,10 +12,79 @@ services:
       MONGO_INITDB_ROOT_USERNAME: root
       MONGO_INITDB_ROOT_PASSWORD: password
       MONGO_INITDB_DATABASE: tea-backend-db
+    command: |
+      bash -c "
+        openssl rand -base64 756 > /tmp/mongo-keyfile
+        chmod 400 /tmp/mongo-keyfile
+        chown mongodb:mongodb /tmp/mongo-keyfile
+        mongod --replSet rs0 --bind_ip_all --keyFile /tmp/mongo-keyfile
+      "
     volumes:
       - mongodb_data:/data/db
     networks:
       - tea-network
+
+  # MongoDB Replica Set Initializer
+  mongodb-init:
+    image: mongo:8.0
+    container_name: tea-mongodb-init
+    depends_on:
+      - mongodb
+    command: |
+      bash -c "
+        echo 'Waiting for MongoDB to start...'
+        until mongosh --host mongodb:27017 --username root --password password --authenticationDatabase admin --eval 'print(\"MongoDB is ready\")' >/dev/null 2>&1; do
+          echo 'Waiting for MongoDB connection...'
+          sleep 2
+        done
+        
+        echo 'Initializing MongoDB replica set...'
+        
+        mongosh --host mongodb:27017 --username root --password password --authenticationDatabase admin --eval '
+        try {
+          var config = {
+            _id: \"rs0\",
+            members: [
+              {
+                _id: 0,
+                host: \"mongodb:27017\"
+              }
+            ]
+          };
+          
+          var result = rs.initiate(config);
+          print(\"Replica set initialization result:\", JSON.stringify(result));
+          
+          // Wait for replica set to be ready
+          var attempts = 0;
+          while (attempts < 30) {
+            try {
+              var status = rs.status();
+              if (status.members[0].state === 1) {
+                print(\"Replica set is ready!\");
+                break;
+              }
+            } catch (e) {
+              // Still initializing
+            }
+            attempts++;
+            sleep(1000);
+          }
+          
+        } catch (e) {
+          if (e.message.includes(\"already initialized\")) {
+            print(\"Replica set already initialized.\");
+          } else {
+            print(\"Error initializing replica set:\", e.message);
+          }
+        }
+        '
+        
+        echo 'MongoDB replica set initialization completed.'
+      "
+    networks:
+      - tea-network
+    restart: "no"
 
   # Redis Cache
   redis:
@@ -40,10 +109,11 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
-      MONGODB_URI: mongodb://root:password@mongodb:27017/tea-backend-db?authSource=admin
+      MONGODB_URI: mongodb://root:password@mongodb:27017/tea-backend-db?authSource=admin&replicaSet=rs0
       REDIS_URL: redis://redis:6379
     depends_on:
       - mongodb
+      - mongodb-init
       - redis
     volumes:
       - ./logs:/app/logs

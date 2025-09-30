@@ -1,6 +1,7 @@
 01-project*
 02-context*
 03-implementation*
+04-personal*
 node_modules
 dist
 .env

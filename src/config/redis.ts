@@ -35,7 +35,8 @@ export const connectRedis = async (): Promise<void> => {
 
     // Test connection
     await redisClient.connect();
-    await redisClient.ping();
+  const pong = await redisClient.ping();
+  logger.info('Redis ping response', { pong });
     
   } catch (error) {
     logger.error('Failed to connect to Redis:', error);
@@ -43,6 +44,7 @@ export const connectRedis = async (): Promise<void> => {
   }
 };
 
+// Singleton pattern to ensure single Redis client instance
 export const getRedisClient = (): Redis => {
   if (!redisClient) {
     throw new Error('Redis client not initialized. Call connectRedis() first.');
