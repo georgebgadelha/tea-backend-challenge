@@ -12,7 +12,6 @@ export enum ScoringAlgorithm {
 export enum SortOption {
   RELEVANCE = 'relevance',
   FRESHNESS = 'freshness',
-  CREATED_AT = 'createdAt',
   LIKE_COUNT = 'likeCount'
 }
 

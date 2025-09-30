@@ -24,12 +24,15 @@ export class RedisPostService extends PostService {
     HOT_POSTS_GLOBAL: 'hot_posts:global',
     HOT_POSTS_CATEGORY: (categoryId: string) =>
       `hot_posts:category:${categoryId}`,
+    FEED_VERSION: (categoryId: string | null) => `feed_v:${categoryId || 'all'}`,
+    // NOTE: cache key intentionally does NOT include page. We cache a "window"
+    // (typically page 1) and slice it for subsequent page requests when possible.
     FEED_CACHE: (
       categoryId: string | null,
-      page: number,
+      version: string | number,
       sortBy: string,
       order: string
-    ) => `feed:${categoryId || 'all'}:p${page}:${sortBy}:${order}`,
+    ) => `feed:${categoryId || 'all'}:v${version}:${sortBy}:${order}`,
   };
 
   private readonly CONFIG = {
@@ -41,23 +44,44 @@ export class RedisPostService extends PostService {
     HOT_POSTS_TTL: 3600, // 1 hour (for cleanup)
 
     // Score thresholds
-    MIN_HOT_POST_SCORE: 5, // Minimum score to be considered "hot"
+    MIN_HOT_POST_SCORE: 3, // Minimum score to be considered "hot"
   };
+
+
+  private async getFeedVersion(categoryId: string | null): Promise<string> {
+    const key = this.REDIS_KEYS.FEED_VERSION(categoryId);
+    try {
+      const v = await this.redis.get(key);
+      if (v) return v;
+      await this.redis.set(key, '1');
+      return '1';
+    } catch (err) {
+      logger.debug('Failed to read feed version from redis, defaulting to 1', { err });
+      return '1';
+    }
+  }
+
+  private async bumpFeedVersion(categoryId: string | null): Promise<void> {
+    const key = this.REDIS_KEYS.FEED_VERSION(categoryId);
+    try {
+      await this.redis.incr(key);
+      logger.info('Bumped feed version', { key });
+    } catch (err) {
+      logger.error('Failed to bump feed version', { key, err });
+    }
+  }
 
   async getPosts(
     filters: PostFilters = {},
     pagination: PaginationOptions = {}
   ): Promise<PostsResult> {
-    const page = pagination.page || 1;
-    const sortBy = filters.sortBy || SortOption.CREATED_AT;
-    const order = filters.order || 'desc';
+  const page = pagination.page || 1;
+  const sortBy = filters.sortBy || SortOption.RELEVANCE;
 
-    // For first page with score-based sorting, use hybrid approach
     if (page === 1 && this.isScoreBasedSort(sortBy)) {
       return this.getHybridFirstPage(filters, pagination);
     }
 
-    // For other pages or non-score sorts, use cached approach
     return this.getCachedPosts(filters, pagination);
   }
 
@@ -68,11 +92,9 @@ export class RedisPostService extends PostService {
     const limit = Math.min(100, Math.max(1, pagination.limit || 20));
 
     try {
-      // Get hot posts from Redis
       const hotPostIds = await this.getHotPosts(filters.categoryId, limit);
 
       if (hotPostIds.length >= limit) {
-        // We have enough hot posts, use them
         const hotPosts = await this.populateHotPosts(
           hotPostIds.slice(0, limit)
         );
@@ -109,21 +131,63 @@ export class RedisPostService extends PostService {
     filters: PostFilters,
     pagination: PaginationOptions
   ): Promise<PostsResult> {
-    const cacheKey = this.buildCacheKey(filters, pagination);
+    const page = pagination.page || 1;
+    const sortBy = filters.sortBy || SortOption.RELEVANCE;
+    const order = filters.order || 'desc';
+    const categoryIdStr = this.normalizeCategoryId(filters.categoryId);
+    const version = await this.getFeedVersion(categoryIdStr);
+    const cacheKey = this.REDIS_KEYS.FEED_CACHE(
+      categoryIdStr,
+      version,
+      sortBy,
+      order
+    );
 
     try {
-      // Check cache first
       const cached = await this.redis.get(cacheKey);
       if (cached) {
         logger.info('Feed cache hit', { cacheKey });
-        return JSON.parse(cached);
+        const parsed: PostsResult = JSON.parse(cached);
+
+        // If a category filter was provided, filter cached posts by category before slicing. 
+        // Cached keys are already per-category when a categoryId was used to build the key.
+        const requestedLimit = pagination.limit || parsed.pagination.limit || 20;
+        const requestedPage = pagination.page || 1;
+        let availablePosts = parsed.posts;
+        if (filters.categoryId) {
+          const requestedCat = this.normalizeCategoryId(filters.categoryId);
+          availablePosts = parsed.posts.filter((p: any) =>
+            this.normalizeCategoryId((p as any).categoryId) === requestedCat
+          );
+        }
+
+        // Compute slice for requested page based on offset
+        const offset = (requestedPage - 1) * requestedLimit;
+        if (availablePosts.length >= offset + requestedLimit) {
+          const sliced = availablePosts.slice(offset, offset + requestedLimit);
+          const total = parsed.pagination.total;
+          const totalPages = Math.ceil(total / requestedLimit);
+
+          return {
+            posts: sliced,
+            pagination: {
+              page: requestedPage,
+              limit: requestedLimit,
+              offset,
+              total,
+              totalPages,
+              hasNext: requestedPage < totalPages,
+              hasPrevious: requestedPage > 1,
+              nextOffset: requestedPage < totalPages ? offset + requestedLimit : null,
+              prevOffset: requestedPage > 1 ? Math.max(0, offset - requestedLimit) : null,
+            },
+          };
+        }
       }
 
-      // Cache miss - fetch from database
       logger.info('Feed cache miss', { cacheKey });
       const result = await super.getPosts(filters, pagination);
 
-      // Cache the result
       await this.cacheFeedResult(cacheKey, result);
 
       return result;
@@ -137,7 +201,8 @@ export class RedisPostService extends PostService {
     const userLikeKey = `user_like:${postId}:${userId}`;
 
     try {
-      const exists = await this.redis.get(userLikeKey);
+  const exists = await this.redis.get(userLikeKey);
+  logger.debug('Redis GET', { key: userLikeKey, exists });
       if (exists) {
         throw new Error(postErrorMessages.POST_ALREADY_LIKED);
       }
@@ -151,11 +216,15 @@ export class RedisPostService extends PostService {
     const result = await super.likePost(userId, postId);
 
     try {
-      await this.redis.set(userLikeKey, '1');
+  const setRes = await this.redis.set(userLikeKey, '1');
+  logger.debug('Redis SET', { key: userLikeKey, res: setRes });
 
-      await this.updateHotPostRankings(result.post);
+  await this.updateHotPostRankings(result.post);
 
-      await this.invalidateRelatedCaches(result.post.categoryId._id);
+  // Bump feed version for the affected category and global feed
+  const catId = this.normalizeCategoryId(result.post.categoryId);
+  await this.bumpFeedVersion(catId);
+  await this.bumpFeedVersion(null);
 
       logger.info('Redis operations completed for like', {
         postId,
@@ -171,7 +240,8 @@ export class RedisPostService extends PostService {
   async unlikePost(userId: string, postId: string): Promise<LikeResult> {
     const userLikeKey = `user_like:${postId}:${userId}`;
     try {
-      const exists = await this.redis.get(userLikeKey);
+  const exists = await this.redis.get(userLikeKey);
+  logger.debug('Redis GET', { key: userLikeKey, exists });
       if (!exists) {
         throw new Error(postErrorMessages.POST_NOT_LIKED);
       }
@@ -184,11 +254,14 @@ export class RedisPostService extends PostService {
     const result = await super.unlikePost(userId, postId);
 
     try {
-      await this.redis.del(userLikeKey);
+  const delRes = await this.redis.del(userLikeKey);
+  logger.debug('Redis DEL', { key: userLikeKey, res: delRes });
 
-      await this.updateHotPostRankings(result.post);
+  await this.updateHotPostRankings(result.post);
 
-      await this.invalidateRelatedCaches(result.post.categoryId._id);
+  const catId = this.normalizeCategoryId(result.post.categoryId);
+  await this.bumpFeedVersion(catId);
+  await this.bumpFeedVersion(null);
 
       logger.info('Redis operations completed for unlike', {
         postId,
@@ -209,9 +282,19 @@ export class RedisPostService extends PostService {
         await this.updateHotPostRankings(post);
       }
 
-      await this.invalidateRelatedCaches(post.categoryId.toString());
+      // Bump feed versions instead of deleting cached keys. This avoids
+      // scanning Redis and lets old cache entries expire naturally.
+      const catId = this.normalizeCategoryId(post.categoryId);
+      await this.bumpFeedVersion(catId);
+      await this.bumpFeedVersion(null);
 
-      logger.info('Redis operations completed for create post', {
+      // Fire-and-forget: refresh a few important feed pages in background.
+      // We don't await it here because we don't want to block the HTTP response.
+      this.refreshCachesForPost(post).catch((err) =>
+        logger.error('Background refresh failed', { err, postId: post._id })
+      );
+
+      logger.debug('Redis operations completed for create post', {
         postId: post._id,
       });
     } catch (error) {
@@ -314,62 +397,117 @@ export class RedisPostService extends PostService {
     );
     pipeline.expire(categoryKey, this.CONFIG.HOT_POSTS_TTL);
 
-    await pipeline.exec();
+  const pipelineRes = await pipeline.exec();
+  logger.debug('Redis pipeline exec', { postId, score, categoryId, pipelineRes });
 
-    logger.debug('Hot post rankings updated', { postId, score, categoryId });
+  logger.debug('Hot post rankings updated', { postId, score, categoryId });
   }
 
-  private async invalidateRelatedCaches(categoryId: string): Promise<void> {
-    const patterns = [
-      `feed:all:*:score:*`,
-      `feed:all:*:relevance:*`,
-      `feed:all:*:freshness:*`,
-      `feed:${categoryId}:*:score:*`,
-      `feed:${categoryId}:*:relevance:*`,
-      `feed:${categoryId}:*:freshness:*`,
-    ];
+  private async invalidateRelatedCaches(categoryId: any): Promise<void> {
+    // Lightweight invalidation: bump the version token for the specific
+    // category and for the global feed. This avoids scanning Redis keys and
+    // massively deleting entries. Old cache entries will become unreachable
+    // because the cache key now includes the version token, and they will
+    // naturally expire per their TTL.
+    const catId = this.normalizeCategoryId(categoryId);
+    await this.bumpFeedVersion(catId);
+    await this.bumpFeedVersion(null);
 
-    let totalInvalidated = 0;
-    for (const pattern of patterns) {
-      const keys = await this.redis.keys(pattern);
-      if (keys.length > 0) {
-        await this.redis.del(...keys);
-        totalInvalidated += keys.length;
-      }
-    }
-
-    logger.info('Cache invalidation completed', {
-      categoryId,
-      keysInvalidated: totalInvalidated,
-    });
+    logger.info('Cache version bumped for category and global', { categoryId: catId });
   }
 
   private async cacheFeedResult(
     cacheKey: string,
     result: PostsResult
   ): Promise<void> {
-    await this.redis.setex(
+    const setexRes = await this.redis.setex(
       cacheKey,
       this.CONFIG.FEED_CACHE_TTL,
       JSON.stringify(result)
     );
+    logger.debug('Redis SETEX', { cacheKey, res: setexRes });
     logger.debug('Feed result cached', { cacheKey });
   }
 
-  private buildCacheKey(
-    filters: PostFilters,
-    pagination: PaginationOptions
-  ): string {
-    const page = pagination.page || 1;
-    const sortBy = filters.sortBy || SortOption.CREATED_AT;
-    const order = filters.order || 'desc';
+  /**
+   * Refresh a small, conservative set of feed caches after a post change.
+   * Uses a per-scope lock to avoid concurrent rebuilds and pipelines the
+   * SETEX calls to minimize roundtrips.
+   */
+  private async refreshCachesForPost(post: any): Promise<void> {
+    const categoryId = this.normalizeCategoryId(post.categoryId) || null;
+    const pagination = { page: 1, limit: 20 };
+    const sorts = [SortOption.FRESHNESS, SortOption.RELEVANCE];
 
-    return this.REDIS_KEYS.FEED_CACHE(
-      filters.categoryId || null,
-      page,
-      sortBy,
-      order
-    );
+    const scopes: Array<{ scope: 'all' | 'category'; categoryId: string | null }> = [
+      { scope: 'all', categoryId: null },
+    ];
+    if (categoryId) scopes.push({ scope: 'category', categoryId });
+
+    for (const s of scopes) {
+      const lockKey = `refresh_lock:${s.categoryId || 'all'}`;
+      try {
+  // ioredis expects expiry mode before NX/XX flag: SET key value EX seconds NX
+  const lockRes = await this.redis.set(lockKey, '1', 'EX', 30, 'NX');
+        if (!lockRes) {
+          logger.debug('Refresh skipped, lock present', { lockKey });
+          continue;
+        }
+
+        const pipeline = this.redis.pipeline();
+
+        for (const sort of sorts) {
+          const filters: PostFilters = { sortBy: sort } as PostFilters;
+          if (s.scope === 'category' && s.categoryId) {
+            filters.categoryId = s.categoryId as any;
+          }
+
+          const result = await super.getPosts(filters, pagination);
+
+          const version = await this.getFeedVersion(
+            this.normalizeCategoryId(filters.categoryId)
+          );
+          const cacheKey = this.REDIS_KEYS.FEED_CACHE(
+            this.normalizeCategoryId(filters.categoryId),
+            version,
+            sort,
+            'desc'
+          );
+
+          pipeline.setex(cacheKey, this.CONFIG.FEED_CACHE_TTL, JSON.stringify(result));
+        }
+
+  const pipelineRes = await pipeline.exec();
+  logger.debug('Refreshed feed caches', { lockKey, pipelineRes });
+      } catch (err) {
+        logger.error('Error while refreshing feed caches', { err, scope: s });
+      }
+    }
+  }
+
+  // buildCacheKey is no longer needed as a separate function because version is
+  // required and fetched async; callers construct the key using getFeedVersion.
+
+  /**
+   * Normalize category identifiers into a string id or null.
+   * Accepts a plain string, a Mongoose populated object ({ _id, id, ... }),
+   * an ObjectId instance, or other values.
+   */
+  private normalizeCategoryId(categoryId: any): string | null {
+    if (!categoryId) return null;
+    if (typeof categoryId === 'string') return categoryId;
+    // Mongoose populated document
+    if (typeof categoryId === 'object') {
+      if ((categoryId as any)._id) return (categoryId as any)._id.toString();
+      if ((categoryId as any).id) return (categoryId as any).id.toString();
+      try {
+        // covers ObjectId or similar
+        return categoryId.toString();
+      } catch (e) {
+        return null;
+      }
+    }
+    return String(categoryId);
   }
 
   private buildPostsResult(
@@ -423,7 +561,11 @@ export class RedisPostService extends PostService {
   }
 
   async clearAllCaches(): Promise<void> {
-    const patterns = ['feed:*', 'hot_posts:*'];
+    // Admin-only: try to clear hot posts and feed cache keys.
+    // This operation can be expensive on large datasets. Prefer bumping
+    // feed versions (which `invalidateRelatedCaches` does) for regular
+    // invalidation.
+    const patterns = ['hot_posts:*'];
 
     for (const pattern of patterns) {
       const keys = await this.redis.keys(pattern);
@@ -432,5 +574,9 @@ export class RedisPostService extends PostService {
         logger.info(`Cleared ${keys.length} keys matching pattern: ${pattern}`);
       }
     }
+
+    // Also bump feed versions globally and per-category to ensure feed keys
+    // are invalidated without scanning.
+    await this.bumpFeedVersion(null);
   }
 }

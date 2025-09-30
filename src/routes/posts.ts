@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { createPost, bulkCreatePosts, getPostById, getPosts, likePost, unlikePost, getPostAnalytics } from '../controllers/postController';
-import { authenticateUser, authenticateUserPermissive } from '../middleware/auth';
+import { authenticateUserPermissive } from '../middleware/auth';
 
 const router = Router();
 
@@ -80,7 +80,7 @@ const router = Router();
  *               $ref: '#/components/schemas/ApiError'
  */
 // POST /posts - Create new post
-router.post('/', authenticateUser, createPost);
+router.post('/', authenticateUserPermissive, createPost);
 
 /**
  * @swagger
@@ -183,7 +183,7 @@ router.post('/', authenticateUser, createPost);
  *               $ref: '#/components/schemas/ApiError'
  */
 // POST /posts/bulk - Bulk create posts
-router.post('/bulk', authenticateUser, bulkCreatePosts);
+router.post('/bulk', authenticateUserPermissive, bulkCreatePosts);
 
 /**
  * @swagger
@@ -273,7 +273,7 @@ router.post('/bulk', authenticateUser, bulkCreatePosts);
  *         description: Unauthorized
  */
 // GET /posts - Get all posts with pagination
-router.get('/', authenticateUser, getPosts);
+router.get('/', authenticateUserPermissive, getPosts);
 
 /**
  * @swagger
@@ -355,7 +355,7 @@ router.get('/', authenticateUser, getPosts);
  *               $ref: '#/components/schemas/ApiError'
  */
 // GET /posts/analytics - Get scoring analytics
-router.get('/analytics', authenticateUser, getPostAnalytics);
+router.get('/analytics', authenticateUserPermissive, getPostAnalytics);
 
 /**
  * @swagger
@@ -390,7 +390,7 @@ router.get('/analytics', authenticateUser, getPostAnalytics);
  *         description: Post not found
  */
 // GET /posts/:id - Get single post
-router.get('/:id', authenticateUser, getPostById);
+router.get('/:id', authenticateUserPermissive, getPostById);
 
 /**
  * @swagger

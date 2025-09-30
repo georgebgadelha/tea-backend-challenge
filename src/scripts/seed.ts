@@ -23,8 +23,17 @@ import mongoose from 'mongoose';
  *   SEED_USERS (approx. unique users for likes, default 20000)
  */
 
-const TOTAL_POSTS = parseInt(process.env.SEED_POSTS || '5000', 10);
-const TOTAL_CATEGORIES = parseInt(process.env.SEED_CATEGORIES || '10', 10);
+// Default distribution (sum = 5000)
+const DEFAULT_DISTRIBUTION = [2500, 1000, 500, 750, 250];
+
+// Allow overriding distribution with env var (CSV of numbers), e.g. "2500,1000,500,750,250"
+const envDist = process.env.SEED_DISTRIBUTION;
+const DISTRIBUTION: number[] = envDist
+	? envDist.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !Number.isNaN(n) && n > 0)
+	: DEFAULT_DISTRIBUTION;
+
+const TOTAL_CATEGORIES = DISTRIBUTION.length;
+const TOTAL_POSTS = DISTRIBUTION.reduce((a, b) => a + b, 0);
 const TOTAL_USERS = parseInt(process.env.SEED_USERS || '20000', 10);
 
 const POST_BATCH = 500; // insertMany batch size
@@ -41,54 +50,57 @@ function randomPastDate(maxDays = 30) {
 }
 
 async function ensureCategories(count: number) {
-	const categories: mongoose.Document[] = [];
-	for (let i = 1; i <= count; i++) {
-		const name = `category-${i}`;
-		const description = `Auto-generated seed category ${i}`;
-		// Upsert category to avoid duplicates when re-running
-		const cat = await Category.findOneAndUpdate(
-			{ name },
-			{ $setOnInsert: { name, description, isActive: true, postCount: 0 } },
-			{ upsert: true, new: true }
-		);
-		categories.push(cat);
-	}
-	return categories;
+  const categories: mongoose.Document[] = [];
+  for (let i = 1; i <= count; i++) {
+    const name = `category-${i}`;
+    const description = `Auto-generated seed category ${i}`;
+    // Upsert category to avoid duplicates when re-running
+    const cat = await Category.findOneAndUpdate(
+      { name },
+      { $setOnInsert: { name, description, isActive: true, postCount: 0 } },
+      { upsert: true, new: true }
+    );
+    categories.push(cat);
+  }
+  return categories;
 }
 
-async function createPosts(categories: any[], totalPosts: number) {
+async function createPosts(categories: any[], distribution: number[]) {
 	const posts: any[] = [];
-	let created = 0;
-
 	const lorem = (i: number) => `Seeded post ${i} - ${'lorem ipsum '.repeat(8)}`;
 
-	while (created < totalPosts) {
-		const batch: any[] = [];
-		const batchSize = Math.min(POST_BATCH, totalPosts - created);
+	for (let c = 0; c < categories.length; c++) {
+		const category = categories[c];
+		let toCreate = distribution[c] || 0;
+		let created = 0;
 
-		for (let i = 0; i < batchSize; i++) {
-			const idx = created + i + 1;
-			const category = categories[idx % categories.length];
-			const createdAt = randomPastDate(30);
+		while (created < toCreate) {
+			const batchSize = Math.min(POST_BATCH, toCreate - created);
+			const batch: any[] = [];
+			for (let i = 0; i < batchSize; i++) {
+				const idx = posts.length + 1;
+				const createdAt = randomPastDate(8); // spread across 90 days for variety
 
-			batch.push({
-				title: `Seeded Post #${idx}`,
-				content: lorem(idx),
-				categoryId: category._id,
-				authorId: `seed_user_${randomInt(1, TOTAL_USERS)}`,
-				likeCount: 0,
-				score: 0,
-				createdAt,
-				updatedAt: createdAt,
-			});
+				batch.push({
+					title: `Seeded Post #${idx}`,
+					content: lorem(idx),
+					categoryId: category._id,
+					authorId: `seed_user_${randomInt(1, TOTAL_USERS)}`,
+					likeCount: 0,
+					score: 0,
+					createdAt,
+					updatedAt: createdAt,
+				});
+			}
+
+			const inserted = await Post.insertMany(batch, { ordered: false });
+			posts.push(...inserted.map((p: any) => p.toObject()));
+			created += batchSize;
+			console.log(`Inserted posts for ${category.name}: ${created}/${toCreate}`);
 		}
-
-		const inserted = await Post.insertMany(batch, { ordered: false });
-		posts.push(...inserted.map((p: any) => p.toObject()));
-		created += batchSize;
-		console.log(`Inserted posts: ${created}/${totalPosts}`);
 	}
 
+	console.log(`Total inserted posts: ${posts.length}`);
 	return posts;
 }
 
@@ -97,11 +109,78 @@ async function createLikesForPosts(posts: any[]) {
 	// - 3% of posts: hot (100-2000 likes)
 	// - 12% of posts: medium (10-100 likes)
 	// - rest: low (0-9 likes)
+	// Additional constraint: every user must like at least one post in the largest category
+	// and at least one post in a second category (different from the largest).
 
 	const likesToInsert: any[] = [];
 	let totalLikes = 0;
-	let userCounter = 1;
 
+	// Organize posts by category for quick sampling
+	const postsByCategory: Record<string, any[]> = {};
+	for (const p of posts) {
+		const cid = p.categoryId.toString();
+		postsByCategory[cid] = postsByCategory[cid] || [];
+		postsByCategory[cid].push(p);
+	}
+
+	// Identify largest category id (the one with most posts from DISTRIBUTION)
+	// We assume categories were created in the same order as DISTRIBUTION
+	let largestCategoryIndex = 0;
+	for (let i = 1; i < DISTRIBUTION.length; i++) {
+		if (DISTRIBUTION[i] > DISTRIBUTION[largestCategoryIndex]) largestCategoryIndex = i;
+	}
+	// Map categories array order to ids by finding a representative post in each distribution slot
+	const categoryIdsOrdered = Object.keys(postsByCategory);
+	const largestCategoryId = categoryIdsOrdered[largestCategoryIndex] || categoryIdsOrdered[0];
+
+	// Keep track of user->set of categories they liked and user/post pairs to avoid duplicates
+	const userCategories: Record<string, Set<string>> = {};
+	const existingLikePairs = new Set<string>(); // `userId|postId`
+
+	// First, ensure every user likes at least one post in largestCategory and at least one in another category
+	for (let u = 1; u <= TOTAL_USERS; u++) {
+		const userId = `seed_user_${u}`;
+		userCategories[userId] = new Set();
+
+		// pick one post in largest category
+		const largestPosts = postsByCategory[largestCategoryId] || [];
+		if (largestPosts.length > 0) {
+			const p = largestPosts[randomInt(0, largestPosts.length - 1)];
+			const key = `${userId}|${p._id.toString()}`;
+			if (!existingLikePairs.has(key)) {
+				likesToInsert.push({ userId, postId: p._id, createdAt: randomPastDate(30) });
+				existingLikePairs.add(key);
+				userCategories[userId].add(largestCategoryId);
+				totalLikes++;
+			}
+		}
+
+		// pick a second category (different from largest)
+		const otherCategoryIds = categoryIdsOrdered.filter(id => id !== largestCategoryId);
+		if (otherCategoryIds.length > 0) {
+			const otherCat = otherCategoryIds[randomInt(0, otherCategoryIds.length - 1)];
+			const otherPosts = postsByCategory[otherCat] || [];
+			if (otherPosts.length > 0) {
+				const p2 = otherPosts[randomInt(0, otherPosts.length - 1)];
+				const key2 = `${userId}|${p2._id.toString()}`;
+				if (!existingLikePairs.has(key2)) {
+					likesToInsert.push({ userId, postId: p2._id, createdAt: randomPastDate(30) });
+					existingLikePairs.add(key2);
+					userCategories[userId].add(otherCat);
+					totalLikes++;
+				}
+			}
+		}
+
+		// flush in batches to avoid growing memory too much
+		if (likesToInsert.length >= LIKE_BATCH) {
+			await Like.insertMany(likesToInsert.splice(0));
+		}
+	}
+
+	// Now, for each post, generate additional likes according to the original distribution
+	// but subtract any likes already created for that post from mandatory phase
+	const likesNeededPerPost: Map<string, number> = new Map();
 	for (const post of posts) {
 		const r = Math.random();
 		let likes = 0;
@@ -109,26 +188,58 @@ async function createLikesForPosts(posts: any[]) {
 		else if (r < 0.15) likes = randomInt(10, 100);
 		else likes = randomInt(0, 9);
 
-		totalLikes += likes;
+		likesNeededPerPost.set(post._id.toString(), likes);
+	}
 
-		for (let j = 0; j < likes; j++) {
-			const userId = `seed_user_${(userCounter % TOTAL_USERS) + 1}`;
-			likesToInsert.push({ userId, postId: post._id, createdAt: randomPastDate(30) });
-			userCounter++;
+	// Count how many mandatory likes we already have per post
+	const mandatoryCounts: Record<string, number> = {};
+	for (const pair of existingLikePairs) {
+		const [, postId] = pair.split('|');
+		mandatoryCounts[postId] = (mandatoryCounts[postId] || 0) + 1;
+	}
 
-			// flush likes in batches
+	// Fill remaining likes per post
+	for (const post of posts) {
+		const pid = post._id.toString();
+		const needed = likesNeededPerPost.get(pid) || 0;
+		const already = mandatoryCounts[pid] || 0;
+		let remaining = needed - already;
+		if (remaining <= 0) continue;
+
+		let attempts = 0;
+		while (remaining > 0) {
+			attempts++;
+			// pick a random user
+			const userNum = randomInt(1, TOTAL_USERS);
+			const userId = `seed_user_${userNum}`;
+			const key = `${userId}|${pid}`;
+			if (existingLikePairs.has(key)) {
+				// avoid duplicates
+			} else {
+				likesToInsert.push({ userId, postId: post._id, createdAt: randomPastDate(30) });
+				existingLikePairs.add(key);
+				userCategories[userId] = userCategories[userId] || new Set();
+				userCategories[userId].add(post.categoryId.toString());
+				totalLikes++;
+				remaining--;
+			}
+
+			// flush occasionally
 			if (likesToInsert.length >= LIKE_BATCH) {
 				await Like.insertMany(likesToInsert.splice(0));
 			}
+
+			// safety to avoid infinite loops in degenerate cases
+			if (attempts > needed * 10) break;
 		}
 	}
 
-	// Insert remaining likes
+	// Insert any remaining likes
 	if (likesToInsert.length > 0) {
 		await Like.insertMany(likesToInsert);
 	}
 
-	console.log(`Inserted total likes: ${totalLikes}`);
+	console.log(`Inserted total likes (including mandatory per-user likes): ${totalLikes}`);
 	return totalLikes;
 }
 
@@ -213,8 +324,8 @@ async function run() {
 		console.log(`Ensuring ${TOTAL_CATEGORIES} categories`);
 		const categories = await ensureCategories(TOTAL_CATEGORIES);
 
-		console.log(`Creating ${TOTAL_POSTS} posts (batch ${POST_BATCH})`);
-		const posts = await createPosts(categories, TOTAL_POSTS);
+		console.log(`Creating posts with distribution: ${DISTRIBUTION.join(', ')} (total ${TOTAL_POSTS})`);
+		const posts = await createPosts(categories, DISTRIBUTION);
 
 		console.log('Creating likes (this can take a while)');
 		await createLikesForPosts(posts);

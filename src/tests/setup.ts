@@ -1,15 +1,21 @@
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
-let mongoServer: MongoMemoryServer;
+let mongoReplSet: MongoMemoryReplSet;
 
 // Setup before all tests
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create();
-  const mongoUri = mongoServer.getUri();
+  // Set NODE_ENV to test to avoid Redis and other production dependencies
+  process.env.NODE_ENV = 'test';
+  
+  // Create MongoMemoryReplSet for transaction support
+  mongoReplSet = await MongoMemoryReplSet.create({
+    replSet: { count: 1 },
+  });
+  const mongoUri = mongoReplSet.getUri();
   
   await mongoose.connect(mongoUri);
-});
+}, 30000); // Increase timeout to 30 seconds
 
 // Cleanup after all tests
 afterAll(async () => {
@@ -17,10 +23,10 @@ afterAll(async () => {
     await mongoose.disconnect();
   }
   
-  if (mongoServer) {
-    await mongoServer.stop();
+  if (mongoReplSet) {
+    await mongoReplSet.stop();
   }
-});
+}, 30000); // Increase timeout to 30 seconds
 
 // Clear database between tests
 afterEach(async () => {

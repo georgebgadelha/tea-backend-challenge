@@ -7,15 +7,30 @@ const mockGetPostById = jest.fn();
 const mockLikePost = jest.fn();
 const mockUnlikePost = jest.fn();
 
+// Create a mock service instance
+const mockServiceInstance = {
+  createPost: mockCreatePost,
+  getPosts: mockGetPosts,
+  getPostById: mockGetPostById,
+  likePost: mockLikePost,
+  unlikePost: mockUnlikePost
+};
+
+// Store references to the mock constructors
+let MockPostService: jest.Mock;
+let MockRedisPostService: jest.Mock;
+
 jest.mock('../../../services/PostService', () => {
+  MockPostService = jest.fn().mockImplementation(() => mockServiceInstance);
   return {
-    PostService: jest.fn().mockImplementation(() => ({
-      createPost: mockCreatePost,
-      getPosts: mockGetPosts,
-      getPostById: mockGetPostById,
-      likePost: mockLikePost,
-      unlikePost: mockUnlikePost
-    }))
+    PostService: MockPostService
+  };
+});
+
+jest.mock('../../../services/RedisPostService', () => {
+  MockRedisPostService = jest.fn().mockImplementation(() => mockServiceInstance);
+  return {
+    RedisPostService: MockRedisPostService
   };
 });
 
@@ -27,14 +42,15 @@ jest.mock('../../../utils/logger', () => ({
   }
 }));
 
-// Now import the controllers
+// Import the controller after mocks are set up
 import {
   createPost,
   getPosts,
   getPostById,
   likePost,
   unlikePost,
-  getPostAnalytics
+  getPostAnalytics,
+  resetPostService
 } from '../../../controllers/postController';
 import { createMockRequest, createMockResponse } from '../../utils/testUtils';
 import { ScoringAlgorithm, SortOption, SortOrder } from '../../../types/scoring';
@@ -46,6 +62,9 @@ describe('Post Controller Unit Tests', () => {
   let mockJson: jest.Mock;
 
   beforeEach(() => {
+    // Ensure test environment
+    process.env.NODE_ENV = 'test';
+    
     mockStatus = jest.fn().mockReturnThis();
     mockJson = jest.fn().mockReturnThis();
     
@@ -63,6 +82,24 @@ describe('Post Controller Unit Tests', () => {
 
     // Clear all mocks
     jest.clearAllMocks();
+    
+    // Reset the mock constructors to return our mock instance
+    MockPostService.mockImplementation(() => mockServiceInstance);
+    MockRedisPostService.mockImplementation(() => mockServiceInstance);
+    
+    // Reset the service singleton to force new instance creation with mocks
+    resetPostService();
+  });
+
+  // Debug test to verify mocks are working
+  describe('Mock Verification', () => {
+    it('should verify that service mocks are properly configured', () => {
+      expect(mockCreatePost).toBeDefined();
+      expect(mockGetPosts).toBeDefined();
+      expect(mockGetPostById).toBeDefined();
+      expect(mockLikePost).toBeDefined();
+      expect(mockUnlikePost).toBeDefined();
+    });
   });
 
   describe('createPost', () => {
@@ -194,7 +231,7 @@ describe('Post Controller Unit Tests', () => {
             maxAgeHours: 168
           }
         },
-        { page: NaN, limit: NaN, offset: NaN }
+        { page: 1, limit: 20 }
       );
       expect(mockResponse.json).toHaveBeenCalledWith({
         success: true,
@@ -248,7 +285,7 @@ describe('Post Controller Unit Tests', () => {
             maxAgeHours: 168
           }
         },
-        { page: 2, limit: 10, offset: NaN }
+        { page: 2, limit: 10 }
       );
       expect(mockResponse.json).toHaveBeenCalledWith({
         success: true,

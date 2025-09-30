@@ -1,11 +1,29 @@
 import { Request, Response } from 'express';
 import { PostService } from '../services/PostService';
+import { RedisPostService } from '../services/RedisPostService';
 import { postErrorMessages } from '../utils/errorMessages';
 import { handlePostError, validateObjectId } from '../utils/errorHandlers';
 import { ScoreCalculator } from '../utils/scoreCalculator';
 import { ScoringAlgorithm, SortOption, SortOrder, ScoringConfig, DEFAULT_SCORING_CONFIG } from '../types/scoring';
 
-const postService = new PostService();
+let postService: PostService | RedisPostService | null = null;
+
+// Lazy call for service instance - use plain PostService in test environment
+function getPostService(): PostService | RedisPostService {
+  if (!postService) {
+    if (process.env.NODE_ENV === 'test') {
+      postService = new PostService();
+    } else {
+      postService = new RedisPostService();
+    }
+  }
+  return postService;
+}
+
+// Test helper to reset the service instance
+export function resetPostService(): void {
+  postService = null;
+}
 
 export const createPost = async (req: Request, res: Response) => {
   try {
@@ -28,7 +46,7 @@ export const createPost = async (req: Request, res: Response) => {
       });
     }
 
-    const post = await postService.createPost({
+    const post = await getPostService().createPost({
       title,
       content,
       categoryId,
@@ -73,7 +91,7 @@ export const bulkCreatePosts = async (req: Request, res: Response) => {
       });
     }
 
-    const result = await postService.bulkCreatePosts(posts, userId);
+  const result = await getPostService().bulkCreatePosts(posts, userId);
 
     // Return appropriate status code based on results
     const statusCode = result.failed === 0 ? 201 : 
@@ -111,7 +129,7 @@ export const getPostById = async (req: Request, res: Response) => {
       });
     }
     
-    const post = await postService.getPostById(id);
+  const post = await getPostService().getPostById(id);
 
     res.json({
       success: true,
@@ -146,13 +164,22 @@ export const getPosts = async (req: Request, res: Response) => {
       scoringConfig
     };
 
-    const pagination = {
-      page: parseInt(req.query.page as string),
-      limit: parseInt(req.query.limit as string),
-      offset: parseInt(req.query.offset as string)
-    };
+    // Parse pagination with safe defaults to avoid NaN values leaking into service
+    const parsedPage = req.query.page ? parseInt(req.query.page as string, 10) : NaN;
+    const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : NaN;
+    const parsedOffset = req.query.offset ? parseInt(req.query.offset as string, 10) : NaN;
 
-    const result = await postService.getPosts(filters, pagination);
+  const page = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 20;
+
+  // If client explicitly provided an offset, pass it through. Otherwise
+  // omit offset and let the service compute skip based on its own clamped limit.
+  const offset = Number.isFinite(parsedOffset) && parsedOffset >= 0 ? parsedOffset : undefined;
+
+  const pagination: any = { page, limit };
+  if (offset !== undefined) pagination.offset = offset;
+
+  const result = await getPostService().getPosts(filters, pagination);
 
     res.json({
       success: true,
@@ -182,7 +209,7 @@ export const likePost = async (req: Request, res: Response) => {
       });
     }
 
-    const result = await postService.likePost(userId, id);
+  const result = await getPostService().likePost(userId, id);
 
     res.json({
       success: true,
@@ -209,7 +236,7 @@ export const unlikePost = async (req: Request, res: Response) => {
       });
     }
 
-    const result = await postService.unlikePost(userId, id);
+  const result = await getPostService().unlikePost(userId, id);
 
     res.json({
       success: true,
@@ -230,7 +257,7 @@ export const getPostAnalytics = async (req: Request, res: Response) => {
     };
 
     // Get posts for analysis (without pagination to analyze all data)
-    const result = await postService.getPosts(filters, { limit: 1000 });
+  const result = await getPostService().getPosts(filters, { limit: 1000 });
     
     if (result.posts.length === 0) {
       return res.json({

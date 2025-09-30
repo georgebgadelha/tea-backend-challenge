@@ -35,7 +35,8 @@ export const connectRedis = async (): Promise<void> => {
 
     // Test connection
     await redisClient.connect();
-    await redisClient.ping();
+  const pong = await redisClient.ping();
+  logger.info('Redis ping response', { pong });
     
   } catch (error) {
     logger.error('Failed to connect to Redis:', error);
