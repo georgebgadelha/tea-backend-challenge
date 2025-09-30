@@ -83,4 +83,12 @@ postSchema.virtual('category', {
   justOne: true,
 });
 
+// Database indexes for efficient feed queries
+postSchema.index({ categoryId: 1, score: -1, createdAt: -1 }); // For relevance/freshness sorting by category
+postSchema.index({ categoryId: 1, likeCount: -1, createdAt: -1 }); // For like count sorting by category
+postSchema.index({ categoryId: 1, createdAt: -1 }); // For time-based sorting by category
+postSchema.index({ score: -1, createdAt: -1 }); // For global relevance/freshness sorting
+postSchema.index({ likeCount: -1, createdAt: -1 }); // For global like count sorting
+postSchema.index({ createdAt: -1 }); // For global time-based sorting
+
 export const Post = mongoose.model<PostDocument>('Post', postSchema);
