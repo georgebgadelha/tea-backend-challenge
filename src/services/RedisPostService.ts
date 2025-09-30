@@ -485,9 +485,6 @@ export class RedisPostService extends PostService {
     }
   }
 
-  // buildCacheKey is no longer needed as a separate function because version is
-  // required and fetched async; callers construct the key using getFeedVersion.
-
   /**
    * Normalize category identifiers into a string id or null.
    * Accepts a plain string, a Mongoose populated object ({ _id, id, ... }),
@@ -559,12 +556,9 @@ export class RedisPostService extends PostService {
       },
     };
   }
-
+  
+  // Admin-only: try to clear hot posts and feed cache keys.=
   async clearAllCaches(): Promise<void> {
-    // Admin-only: try to clear hot posts and feed cache keys.
-    // This operation can be expensive on large datasets. Prefer bumping
-    // feed versions (which `invalidateRelatedCaches` does) for regular
-    // invalidation.
     const patterns = ['hot_posts:*'];
 
     for (const pattern of patterns) {
@@ -574,9 +568,6 @@ export class RedisPostService extends PostService {
         logger.info(`Cleared ${keys.length} keys matching pattern: ${pattern}`);
       }
     }
-
-    // Also bump feed versions globally and per-category to ensure feed keys
-    // are invalidated without scanning.
     await this.bumpFeedVersion(null);
   }
 }

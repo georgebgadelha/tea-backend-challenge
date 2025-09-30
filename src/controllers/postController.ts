@@ -8,7 +8,6 @@ import { ScoringAlgorithm, SortOption, SortOrder, ScoringConfig, DEFAULT_SCORING
 
 let postService: PostService | RedisPostService | null = null;
 
-// Lazy call for service instance - use plain PostService in test environment
 function getPostService(): PostService | RedisPostService {
   if (!postService) {
     if (process.env.NODE_ENV === 'test') {
@@ -30,7 +29,6 @@ export const createPost = async (req: Request, res: Response) => {
     const { title, content, categoryId } = req.body;
     const userId = req.userId!; // Auth middleware guarantees this exists
 
-    // Input validation
     if (!title || !content || !categoryId) {
       return res.status(400).json({
         success: false,
@@ -38,7 +36,6 @@ export const createPost = async (req: Request, res: Response) => {
       });
     }
 
-    // Validate ObjectId format for categoryId
     if (!validateObjectId(categoryId)) {
       return res.status(400).json({
         success: false,
@@ -68,7 +65,6 @@ export const bulkCreatePosts = async (req: Request, res: Response) => {
     const { posts } = req.body;
     const userId = req.userId!; // Auth middleware guarantees this exists
 
-    // Input validation
     if (!posts || !Array.isArray(posts)) {
       return res.status(400).json({
         success: false,
@@ -83,7 +79,6 @@ export const bulkCreatePosts = async (req: Request, res: Response) => {
       });
     }
 
-    // Check bulk size limit
     if (posts.length > 50) {
       return res.status(400).json({
         success: false,
@@ -93,7 +88,6 @@ export const bulkCreatePosts = async (req: Request, res: Response) => {
 
   const result = await getPostService().bulkCreatePosts(posts, userId);
 
-    // Return appropriate status code based on results
     const statusCode = result.failed === 0 ? 201 : 
                       result.successful === 0 ? 400 : 207; // 207 = Multi-Status
 
@@ -121,7 +115,6 @@ export const getPostById = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     
-    // Validate ObjectId format
     if (!validateObjectId(id)) {
       return res.status(400).json({
         success: false,
@@ -142,7 +135,6 @@ export const getPostById = async (req: Request, res: Response) => {
 
 export const getPosts = async (req: Request, res: Response) => {
   try {
-    // Parse scoring configuration
     const algorithm = req.query.algorithm as ScoringAlgorithm || DEFAULT_SCORING_CONFIG.algorithm;
     const freshnessWeight = req.query.freshnessWeight ? 
       parseFloat(req.query.freshnessWeight as string) : 
@@ -164,7 +156,6 @@ export const getPosts = async (req: Request, res: Response) => {
       scoringConfig
     };
 
-    // Parse pagination with safe defaults to avoid NaN values leaking into service
     const parsedPage = req.query.page ? parseInt(req.query.page as string, 10) : NaN;
     const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : NaN;
     const parsedOffset = req.query.offset ? parseInt(req.query.offset as string, 10) : NaN;
@@ -201,7 +192,6 @@ export const likePost = async (req: Request, res: Response) => {
     const { id } = req.params;
     const userId = req.userId!; // Auth middleware guarantees this exists
 
-    // Validate ObjectId format
     if (!validateObjectId(id)) {
       return res.status(400).json({
         success: false,
@@ -228,7 +218,6 @@ export const unlikePost = async (req: Request, res: Response) => {
     const { id } = req.params;
     const userId = req.userId!; // Auth middleware guarantees this exists
 
-    // Validate ObjectId format
     if (!validateObjectId(id)) {
       return res.status(400).json({
         success: false,
@@ -257,7 +246,7 @@ export const getPostAnalytics = async (req: Request, res: Response) => {
     };
 
     // Get posts for analysis (without pagination to analyze all data)
-  const result = await getPostService().getPosts(filters, { limit: 1000 });
+  const result = await getPostService().getPosts(filters, { limit: req.query.limit ? parseInt(req.query.limit as string, 10) : 1000 });
     
     if (result.posts.length === 0) {
       return res.json({

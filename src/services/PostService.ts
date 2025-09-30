@@ -452,7 +452,6 @@ export class PostService {
     let total: number;
 
     if (needsScoring) {
-      // For score-based sorting, use database scores
       const sortField = filters.sortBy === SortOption.RELEVANCE ? 'score' : 'score';
       const sortDirection = filters.order === SortOrder.ASC ? 1 : -1;
       const sortOptions: any = {};
@@ -490,7 +489,6 @@ export class PostService {
       ]);
 
     } else {
-      // Traditional database sorting for non-score fields
       const sortOptions = this.buildSortOptions(filters.sortBy, filters.order);
 
       // Add sorting to pipeline

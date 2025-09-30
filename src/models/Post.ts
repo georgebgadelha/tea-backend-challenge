@@ -68,14 +68,13 @@ postSchema.pre('save', function(next) {
       );
       this.score = scoreResult.finalScore;
     } catch (error) {
-      // If score calculation fails, use a default score
       this.score = 0;
     }
   }
   next();
 });
 
-// Virtual for populated category
+// Populates category details on post fetch
 postSchema.virtual('category', {
   ref: 'Category',
   localField: 'categoryId',
@@ -83,7 +82,6 @@ postSchema.virtual('category', {
   justOne: true,
 });
 
-// Database indexes for efficient feed queries
 postSchema.index({ categoryId: 1, score: -1, createdAt: -1 }); // For relevance/freshness sorting by category
 postSchema.index({ categoryId: 1, likeCount: -1, createdAt: -1 }); // For like count sorting by category
 postSchema.index({ categoryId: 1, createdAt: -1 }); // For time-based sorting by category

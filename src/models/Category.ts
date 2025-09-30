@@ -43,7 +43,6 @@ const categorySchema = new Schema<CategoryDocument>({
   toObject: { virtuals: true },
 });
 
-// Database indexes for efficient category queries
 categorySchema.index({ isActive: 1, name: 1 }); // For active categories lookup
 
 export const Category = mongoose.model<CategoryDocument>('Category', categorySchema);
