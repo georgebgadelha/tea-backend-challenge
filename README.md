@@ -14,11 +14,20 @@ npm run build
 docker compose up -d
 
 # API will be available at http://localhost:3000
+
+# Seed command
+npm run seed:docker
+
+# Some quick commands to improve testing
+npm run docker:up # Same as docker compose up
+npm run docker:logs # Check docker logs
+npm run docker:down # Same as docker compose down
 ```
 
-There are some commands which will help you understand better, which is for example the api docs. For this case run `npm run export:swagger",
+There are some commands which will help you understand better, which is for example the api docs. For this case run `npm run export:swagger`,
 so you can have a `swagger.json` file to import on your Postman/API platform.
 
+**💡 REMEMBER THAT TO RUN THE SEED SCRIPT YOU MUST TYPE 💡** `npm run seed:docker` (after running docker compose up)
 
 ## Scoring Formula
 

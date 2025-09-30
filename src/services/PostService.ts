@@ -324,73 +324,96 @@ export class PostService {
     if (!category.isActive) {
       throw new Error(postErrorMessages.CATEGORY_NOT_ACTIVE);
     }
-    // Transactions-only implementation. This method requires the MongoDB
-    // deployment to support sessions/transactions (replica set or mongos).
-    let session: mongoose.ClientSession | undefined;
-    try {
-      session = await mongoose.startSession();
-    } catch (err: any) {
-      logger.error('Failed to start MongoDB session - transactions are required', { err: err?.message || err });
-      // Surface a clear error so callers know the deployment isn't configured
-      // for transactions. Do not fall back to a non-transactional path.
-      throw new Error('MongoDB transactions are required but not supported by the current deployment. Ensure MongoDB is running as a replica set.');
-    }
-
-    try {
-      session.startTransaction();
-
-      const post = new Post({
-        title,
-        content,
-        categoryId,
-        authorId
-      });
-
-      await post.save({ session });
-
-      // Calculate initial score (freshness + relevance). likeCount is zero here.
+    
+    // Retry transient transaction errors (like WriteConflict/LockTimeout due to index creation)
+    const maxRetries = 3;
+    let retryCount = 0;
+    
+    while (retryCount < maxRetries) {
+      // Transactions-only implementation. This method requires the MongoDB
+      // deployment to support sessions/transactions (replica set or mongos).
+      let session: mongoose.ClientSession | undefined;
       try {
-        const scoreResult = ScoreCalculator.calculateScore(post.likeCount || 0, post.createdAt, DEFAULT_SCORING_CONFIG);
-        post.score = scoreResult.finalScore;
-        // Persist score within same transaction
+        session = await mongoose.startSession();
+      } catch (err: any) {
+        logger.error('Failed to start MongoDB session - transactions are required', { err: err?.message || err });
+        // Surface a clear error so callers know the deployment isn't configured
+        // for transactions. Do not fall back to a non-transactional path.
+        throw new Error('MongoDB transactions are required but not supported by the current deployment. Ensure MongoDB is running as a replica set.');
+      }
+
+      try {
+        session.startTransaction();
+
+        const post = new Post({
+          title,
+          content,
+          categoryId,
+          authorId
+        });
+
         await post.save({ session });
-      } catch (scoreErr) {
-        logger.warn('Failed to calculate/persist post score on create', { err: (scoreErr as Error).message });
-      }
 
-      // Update category post count within the transaction
-      await Category.findByIdAndUpdate(
-        categoryId,
-        { $inc: { postCount: 1 } },
-        { session }
-      );
+        // Calculate initial score (freshness + relevance). likeCount is zero here.
+        try {
+          const scoreResult = ScoreCalculator.calculateScore(post.likeCount || 0, post.createdAt, DEFAULT_SCORING_CONFIG);
+          post.score = scoreResult.finalScore;
+          // Persist score within same transaction
+          await post.save({ session });
+        } catch (scoreErr) {
+          logger.warn('Failed to calculate/persist post score on create', { err: (scoreErr as Error).message });
+        }
 
-      await session.commitTransaction();
+        // Update category post count within the transaction
+        await Category.findByIdAndUpdate(
+          categoryId,
+          { $inc: { postCount: 1 } },
+          { session }
+        );
 
-      // Populate the category for the response
-      await post.populate('categoryId', 'name description');
+        await session.commitTransaction();
 
-      logger.info('Post created successfully', {
-        postId: post._id,
-        authorId,
-        categoryId
-      });
+        // Populate the category for the response
+        await post.populate('categoryId', 'name description');
 
-      return post;
-    } catch (error: any) {
-      try {
-        await session.abortTransaction();
-      } catch (abortErr) {
-        logger.warn('Failed to abort transaction during createPost error handling', { err: (abortErr as Error).message });
-      }
-      throw error;
-    } finally {
-      try {
-        session.endSession();
-      } catch (endErr) {
-        logger.warn('Failed to end MongoDB session', { err: (endErr as Error).message });
+        logger.info('Post created successfully', {
+          postId: post._id,
+          authorId,
+          categoryId
+        });
+
+        return post;
+      } catch (error: any) {
+        try {
+          await session.abortTransaction();
+        } catch (abortErr) {
+          logger.warn('Failed to abort transaction during createPost error handling', { err: (abortErr as Error).message });
+        }
+        
+        // Check if this is a transient transaction error that can be retried (this started after adding indexes)
+        const isTransientError = error?.errorLabels?.includes?.('TransientTransactionError') || 
+                                 error?.codeName === 'WriteConflict' || 
+                                 error?.codeName === 'LockTimeout';
+                                 
+        if (isTransientError && retryCount < maxRetries - 1) {
+          retryCount++;
+          // Add exponential backoff delay before retry
+          const delay = 100 * Math.pow(2, retryCount);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        
+        throw error;
+      } finally {
+        try {
+          session.endSession();
+        } catch (endErr) {
+          logger.warn('Failed to end MongoDB session', { err: (endErr as Error).message });
+        }
       }
     }
+    
+    throw new Error('Transaction failed after maximum retries');
   }
 
   async getPostById(postId: string) {
