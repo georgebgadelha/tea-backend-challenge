@@ -111,11 +111,9 @@ The compound indexes as already mentioned was to avoid duplicate likes. The time
 2. **Add connection pooling** and query optimization for high-traffic scenarios
 3. **Implement cursor-based pagination** for more efficient large dataset traversal
 4. **Event-driven architecture** using message queues for async processing
-5. **A/B testing framework** for scoring algorithm experimentation 
-  5. (You will notice on the code I have two formulas but I had to prioritize the must-have and not nice to have)
+5. **A/B testing framework** for scoring algorithm experimentation. (You will notice on the code I have two formulas but I had to prioritize the must-have and not nice to have)
 6. **Enhanced security** with rate limiting, input validation, and audit logging
-7. **Automated performance testing** and load testing in CI/CD pipeline
- 7. (This one would also detects potential fixes/improvements for v2)
+7. **Automated performance testing** and load testing in CI/CD pipeline. (This one would also detects potential fixes/improvements for v2)
 
 ## Architecture
 
